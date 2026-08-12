@@ -1,0 +1,34 @@
+{
+  "seed_version": "2026-08-04-p1",
+  "standards": [
+    {
+      "standard_id": "DOCSTD-NATIONAL-GOV-FS-2023",
+      "document_type": "feasibility_study",
+      "jurisdiction_code": "100000",
+      "jurisdiction_name": "全国",
+      "authority_name": "国家发展改革委",
+      "title": "政府投资项目可行性研究报告编写通用大纲（2023年版）",
+      "version": "2023",
+      "effective_date": "2023-05-01",
+      "expiry_date": "",
+      "required_sections": [
+        "项目概述",
+        "项目建设背景和必要性",
+        "项目需求分析与产出方案",
+        "项目选址与要素保障",
+        "项目建设方案",
+        "项目运营方案",
+        "项目投融资与财务方案",
+        "项目影响效果分析",
+        "项目风险管控方案",
+        "研究结论及建议"
+      ],
+      "optional_sections": ["摘要", "附表", "附件", "附图"],
+      "table_requirements": ["投资估算及资金筹措", "绩效目标或产出指标", "风险识别与应对"],
+      "official_url": "https://www.ndrc.gov.cn/xxgk/zcfb/ghxwj/202304/t20230407_1353356_ext.html",
+      "verification_status": "verified",
+      "status": "active",
+      "applicability_condition": "项目属于政府投资时原则上适用；具体行业或属地另有现行细则时，应叠加或优先匹配其强制要求。"
+    }
+  ]
+}

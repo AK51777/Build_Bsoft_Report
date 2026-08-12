@@ -1,0 +1,8 @@
+{
+  "output": "tests/rendered-word-smoke/word-smoke.docx",
+  "preset": "narrative_proposal + A4 Chinese government feasibility override",
+  "headings": 9,
+  "paragraphs": 8,
+  "tables": 1,
+  "render_required": true
+}
