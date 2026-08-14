@@ -65,16 +65,31 @@ def parse_number(value: Any) -> float | None:
 
 def canonical_mode(value: Any) -> str:
     text = clean_cell(value)
+    if "利旧升级" in text or ("利旧" in text and "升级" in text):
+        return "upgrade"
+    if "利旧" in text or "复用" in text:
+        return "reuse"
     matches = [code for code, terms in MODE_PATTERNS if any(term in text for term in terms)]
     return matches[0] if len(set(matches)) == 1 else "pending_confirmation"
 
 
-def canonical_investment_category(value: Any, item_type: str) -> str:
+def canonical_investment_category(value: Any, item_type: str, standard_name: str = "") -> str:
     text = f"{clean_cell(value)} {item_type}".strip()
     matches = [
         code for code, terms in INVESTMENT_PATTERNS if any(term in text for term in terms)
     ]
-    return matches[0] if len(set(matches)) == 1 else ""
+    if len(set(matches)) == 1:
+        return matches[0]
+    name = clean_cell(standard_name)
+    if any(term in name for term in ("咨询", "实施服务", "培训服务", "运维服务", "评级")):
+        return "implementation_service"
+    if any(term in name for term in ("安全", "等保", "密码", "防火墙", "审计")):
+        return "security"
+    if any(term in name for term in ("硬件", "设备", "服务器", "存储", "机房", "终端")):
+        return "hardware"
+    if any(term in name for term in ("接口", "迁移")):
+        return "interface_migration"
+    return "software" if name else ""
 
 
 def selected_header(sheet: dict[str, Any], field: str) -> str | None:
@@ -134,16 +149,13 @@ def normalize_payload(
             quantity = parse_number(quantity_text)
             unit = row_value(row, sheet, "unit")
             investment_category = canonical_investment_category(
-                row_value(row, sheet, "investment_category"), item_type
+                row_value(row, sheet, "investment_category"), item_type, standard_name
             )
             acceptance_target = row_value(row, sheet, "acceptance_target")
             semantic_key = (
                 standard_name.casefold(),
                 domain.casefold(),
                 item_type.casefold(),
-                construction_mode,
-                quantity if quantity is not None else "",
-                unit.casefold(),
             )
             scope_id = stable_id("SCOPE", project_id, *semantic_key)
             source_record = {

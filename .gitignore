@@ -48,6 +48,10 @@ dbeaver_key*
 projects/
 workspaces/
 project-workbenches/
+knowledge-packs/
+standard-knowledge-packs/
+标准知识包-本地/
+*.knowledge-pack.json
 原始资料/
 数据包/
 运行记录/

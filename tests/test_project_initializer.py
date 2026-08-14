@@ -55,6 +55,13 @@ class ProjectInitializerTests(unittest.TestCase):
             )
             self.assertEqual(config["workflow"]["current_stage"], "0")
             self.assertEqual(config["paths"]["database"], "数据包/数据库/knowledge.sqlite")
+            self.assertFalse(config["knowledge"]["server"]["enabled"])
+            self.assertEqual(config["knowledge"]["server"]["port"], 15432)
+            self.assertEqual(
+                config["knowledge"]["server"]["password_env"],
+                "MEDICAL_FEASIBILITY_DB_PASSWORD",
+            )
+            self.assertNotIn("password", config["knowledge"]["server"])
 
             conn = sqlite3.connect(workbench / config["paths"]["database"])
             try:

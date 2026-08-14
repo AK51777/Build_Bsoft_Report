@@ -42,7 +42,8 @@ def export_selection(database: Path, project_code: str, match_run_id: str = "") 
                 """
                 SELECT p.*,c.clause_id,c.article_path,c.original_text,c.normalized_summary,
                        c.topic_tags_json,c.target_objects_json,c.requirement_type,
-                       c.applicability_notes,c.verification_status AS clause_verification_status,
+                       c.applicability_notes,c.permitted_sections_json,c.forbidden_claims_json,
+                       c.verification_status AS clause_verification_status,
                        m.match_id,m.match_dimensions_json,m.relevance_level,m.basis_use,
                        m.background_use,m.other_chapter_use_json,m.project_relation,m.sort_key,
                        m.basis_order,m.decision_status,m.decision_reason,m.created_at AS match_created_at,

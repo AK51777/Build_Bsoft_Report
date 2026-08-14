@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import inspect
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,56 @@ from validate_project_gates import validate  # noqa: E402
 
 
 class ScopeCapabilityMappingTests(unittest.TestCase):
+    def test_default_similarity_threshold_is_conservative(self) -> None:
+        self.assertEqual(inspect.signature(map_capabilities).parameters["threshold"].default, 0.55)
+
+    def test_exact_product_scope_expands_to_all_product_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            initialized = initialize_project(
+                Path(tmp) / "project", project_code="TEST-MAP-PRODUCT"
+            )
+            database = Path(initialized["database"])
+            ingest_scope_payload(
+                database,
+                {
+                    "source": {"path": "C:/scope.xlsx", "sha256": "d" * 64},
+                    "sheets": [{
+                        "name": "Scope",
+                        "detected_columns": {"original_name": ["建设内容"]},
+                        "rows": [{"_source_row": 2, "建设内容": "医院数据中心"}],
+                    }],
+                },
+                project_code="TEST-MAP-PRODUCT",
+            )
+            ingest_capabilities(
+                database,
+                {
+                    "capabilities": [
+                        {
+                            "product_code": "DC",
+                            "product_name": "医院数据中心",
+                            "capability_name": "临床数据中心",
+                            "capability_description": "临床数据归集",
+                            "review_status": "approved",
+                        },
+                        {
+                            "product_code": "DC",
+                            "product_name": "医院数据中心",
+                            "capability_name": "管理数据中心",
+                            "capability_description": "管理数据归集",
+                            "review_status": "approved",
+                        },
+                    ]
+                },
+            )
+            result = map_capabilities(
+                database, "TEST-MAP-PRODUCT", max_candidates=1
+            )
+            self.assertEqual(len(result["candidates"]), 2)
+            self.assertTrue(all(
+                item["match_basis"] == "exact_product" for item in result["candidates"]
+            ))
+
     def test_mapping_never_creates_scope_and_preserves_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             initialized = initialize_project(

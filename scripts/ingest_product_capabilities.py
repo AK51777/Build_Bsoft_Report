@@ -40,8 +40,9 @@ def ingest_capabilities(database: Path, payload: dict[str, Any]) -> dict[str, An
                   capability_id, product_code, product_name, capability_name,
                   capability_description, prerequisites_json,
                   interface_dependencies_json, exclusions_json,
-                  applicable_versions_json, standard_block_ids_json, review_status
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                  applicable_versions_json, standard_block_ids_json, review_status,
+                  category,module_name,selection_rules_json,source_location
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(capability_id) DO UPDATE SET
                   product_code=excluded.product_code,
                   product_name=excluded.product_name,
@@ -52,6 +53,9 @@ def ingest_capabilities(database: Path, payload: dict[str, Any]) -> dict[str, An
                   exclusions_json=excluded.exclusions_json,
                   applicable_versions_json=excluded.applicable_versions_json,
                   standard_block_ids_json=excluded.standard_block_ids_json,
+                  category=excluded.category,module_name=excluded.module_name,
+                  selection_rules_json=excluded.selection_rules_json,
+                  source_location=excluded.source_location,
                   review_status=CASE
                     WHEN product_capability.review_status='retired'
                     THEN product_capability.review_status ELSE excluded.review_status END
@@ -68,6 +72,10 @@ def ingest_capabilities(database: Path, payload: dict[str, Any]) -> dict[str, An
                     dump_json(capability.get("applicable_versions", [])),
                     dump_json(capability.get("standard_block_ids", [])),
                     capability.get("review_status", "pending"),
+                    capability.get("category", ""),
+                    capability.get("module_name", ""),
+                    dump_json(capability.get("selection_rules", [])),
+                    capability.get("source_location", ""),
                 ),
             )
             created += int(exists is None)

@@ -98,7 +98,7 @@ class SectionCompositionPlanTests(unittest.TestCase):
                 self.assertIn(("fact", "FACT-PROJECT-NAME", "direct"), plan_sources)
                 self.assertIn(("fact", "FACT-ACCEPTANCE", "prohibited"), plan_sources)
                 self.assertIn(
-                    ("scope", scope_result["items"][0]["scope_id"], "prohibited"),
+                    ("scope", scope_result["items"][0]["scope_id"], "parameterized"),
                     plan_sources,
                 )
             finally:

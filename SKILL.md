@@ -18,6 +18,8 @@ description: Create evidence-based Chinese government-investment medical informa
 3. 在项目目录内建立或复用独立工作台；不得搬移、覆盖或修改原始材料。
 4. 先锁定正式项目名称、文档类型、范围最高依据、核心验收目标、未知事项处理方式和目标交付格式。
 5. 若上述信息缺失，先形成任务书和少量实质性问题；不得直接生成完整正文。
+6. 存在公司标准方案和标准清单时，先构建位于项目外部的受审知识包；不得把公司原文、客户材料或知识包提交到公开 Skill 仓库。
+7. 配置了共享 PostgreSQL 时，只从已发布运行视图同步到项目 SQLite 快照；正文生成不得直接依赖实时服务器查询。服务器不可用时可以继续使用已同步快照或本地受审知识包。
 
 复制 `assets/project-workbench-template/` 作为新项目工作台起点。项目已有目录结构时，只复制需要的模板，不强制改名或搬迁。
 
@@ -45,14 +47,14 @@ description: Create evidence-based Chinese government-investment medical informa
 
 0. 任务定义：形成项目任务书，明确名称、文档类型、范围依据、验收目标、参考限制、未知事项处理和版本规则。
 1. 资料与事实：登记来源，提取原子事实，登记单位、时点、位置、状态、冲突、缺失和确认问题。
-1P. 政策证据：按项目地域、类型、范围和验收目标检索官方原文，核验有效性，提取条款，确定性排序并提交用户确认。
+1P. 政策证据：把部门政策目录作为候选线索，按项目地域、类型、范围和验收目标核验官方原文、有效性和条款；政策法规与标准规范分组排序，形成可组装材料并提交用户确认。未经官方核验的目录项不得作为正式依据。
 2. 清单与范围：标准化客户建设清单，区分建设方式和费用类型，映射公司能力但不改变客户边界。
 3. 参考方案：按章节评估结构和写法复用，形成允许内容、禁止内容和残留扫描词表。
-4. 贯通矩阵与目录：建立“问题—需求—建设—投资—指标—效益”链条，再形成三级目录。
-5. 章节任务拆解：为每章分配目的、问题、事实ID、范围ID、素材、限制、表格、占位和完成条件。
-6. 内容生成：先写证据骨架，再补充论证和衔接；逐章保存；不确定内容保留统一占位。
-7. 多维校验：检查事实、范围、投资、指标、政策、逻辑、跨章一致性、语言、参考污染和占位。
-8. 文档工程与交付：使用脱敏模板合并 Word，处理目录、编号、横向节、页码和元数据，并完成渲染复核。
+4. 贯通矩阵与目录：建立“问题—需求—建设—投资—指标—效益”链条，再形成三级主目录；建设内容按客户范围、确认能力和受审语料动态展开到四至七级。
+5. 章节任务拆解：先判断章节适用性，再为适用章节分配目的、问题、事实ID、范围ID、素材、限制、表格、篇幅和完成条件。
+6. 内容生成：按章节任务包生成证据约束初稿，政策依据、标准规范、建设范围、能力和语料均绑定来源；逐章保存并运行章节校验，只有校验通过且哈希一致的版本才能采纳。
+7. 多维校验：检查事实、范围、投资、指标、政策、逻辑、跨章一致性、语言、参考污染和占位，并以真人可研为基准检查章节完整度、正文规模、表格、重复率和模板化表达。
+8. 文档工程与交付：使用已确认的脱敏模板合并 Word，把 Markdown 标记转换为真实 Word 标题样式，处理目录、编号、横向节、页码和元数据，执行独立交付审计并完成逐页渲染复核。
 9. 复盘沉淀：只沉淀通用规则、脚本和脱敏模板，不把客户事实或个人信息打包进 Skill。
 
 每一阶段都必须有进入条件、标准产物、检查和门禁。详细规则见 `references/workflow.md`。
@@ -89,6 +91,8 @@ description: Create evidence-based Chinese government-investment medical informa
 
 用户要求保留占位时，可以在阶段性工作稿中保留 `【待补充】`、`【待确认】` 和 `【分析建议】`；正式报批前必须生成占位汇总并逐项处置。
 
+`build_report_docx.py` 默认只生成带“工作稿（未通过正式交付门禁）”标识的工作稿。正式 `delivery` 模式必须同时绑定当前项目数据库、最新通过的交付校验、当前数据库组装内容和已确认 Word 模板；生成后还必须通过独立制品审计与哈希绑定的逐页渲染复核。不得直接调用转换脚本绕过数据库链。
+
 ## 确定性脚本
 
 优先使用以下脚本完成机械工作，避免每次重写临时代码：
@@ -96,7 +100,7 @@ description: Create evidence-based Chinese government-investment medical informa
 ```text
 python scripts/init_project_workbench.py <target-dir> --project-code <project-code> [--official-name <name>] [--owner-name <name>]
 python scripts/check_dependencies.py --output dependency-check.json
-python scripts/run_project_pipeline.py <target-dir> --project-code <project-code> [--official-name <name>] [--owner-name <name>] [--word-template <confirmed-template.docx>] --output pipeline-result.json
+python scripts/run_project_pipeline.py <target-dir> --project-code <project-code> [--official-name <name>] [--owner-name <name>] [--standard-knowledge-pack <reviewed-pack.json>] [--word-template <confirmed-template.docx>] --output pipeline-result.json
 python scripts/inventory_sources.py <paths...> --output 01-资料清单.json
 python scripts/classify_source_roles.py source-inventory.json [--overrides source-role-overrides.json] --output source-role-register.json
 python scripts/extract_docx_structure.py <report.docx> --output docx-structure.json
@@ -112,13 +116,31 @@ python scripts/confirm_scope_baseline.py <knowledge.sqlite> <project-code> <base
 python scripts/build_traceability_matrix.py <knowledge.sqlite> <project-code> --links traceability-links.json --output-json traceability-matrix.json --output-csv traceability-matrix.csv
 python scripts/ingest_product_capabilities.py <knowledge.sqlite> <product-capabilities.json> --output capability-ingest-result.json
 python scripts/map_scope_capabilities.py <knowledge.sqlite> <project-code> --output scope-capability-map.json
+python scripts/build_standard_knowledge_pack.py <company-standard.docx> <company-scope.xlsx> --output <local-private-pack.json>
+python scripts/import_standard_knowledge_pack.py <knowledge.sqlite> <local-private-pack.json> --output standard-pack-import.json
+python scripts/build_policy_catalog.py <department-policy-index.xlsx> --output <reviewed-policy-catalog.json>
+python scripts/import_policy_catalog_sqlite.py <knowledge.sqlite> <reviewed-policy-catalog.json> --output policy-catalog-import.json
+python scripts/match_policy_catalog_candidates.py <knowledge.sqlite> <project-code> --topic <topic> --output-json policy-catalog-candidates.json --output-md policy-catalog-candidates.md
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/init_postgres_knowledge_db.py --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output postgres-init.json
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/audit_postgres_schema.py --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output postgres-schema-audit.json
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/import_standard_knowledge_pack_postgres.py <local-private-pack.json> --publish --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output postgres-pack-import.json
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/import_policy_catalog_postgres.py <reviewed-policy-catalog.json> --publish --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output policy-catalog-import.json
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/import_verified_policies_postgres.py <verified-policy-documents.json> --publish --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output verified-policy-import.json
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/sync_postgres_knowledge_snapshot.py <knowledge.sqlite> <project-code> --package-id <package-id> --catalog-id <catalog-id> --policy-topic <topic> --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output snapshot-sync.json
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/query_postgres_knowledge.py package --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output published-packages.json
+python scripts/apply_scope_capability_decisions.py <knowledge.sqlite> <mapping-decisions.json> --output mapping-apply-result.json
 python scripts/build_section_composition_plan.py <knowledge.sqlite> <project-code> --output section-composition-plan.json
 python scripts/export_section_task_packages.py <knowledge.sqlite> <project-code> <10-章节任务包> --output task-package-export.json
+python scripts/build_policy_section_material.py <knowledge.sqlite> <project-code> --mode working --output-json policy-section-material.json --output-md policy-section-material.md
+python scripts/build_evidence_bound_initial_drafts.py <knowledge.sqlite> <project-code> <10-章节任务包> <11-正文工作稿> --output evidence-bound-drafts.json
 python scripts/save_section_draft.py <knowledge.sqlite> <project-code> <chapter-code> <draft.md> <chapter-package.json> --model <model> --prompt-version <version> --output draft-save-result.json
+python scripts/validate_section_draft.py <knowledge.sqlite> <project-code> <chapter-code> <version-no> --output section-validation.json
 python scripts/manage_section_draft.py <knowledge.sqlite> <project-code> <chapter-code> <version-no> <adopt|discard|restore> --output draft-action-result.json
 python scripts/assemble_report_markdown.py <knowledge.sqlite> <project-code> --mode <working|delivery> --output report.md --summary assembly-summary.json
 python scripts/validate_full_report.py <knowledge.sqlite> <project-code> --mode <working|delivery> --residual-terms <参考残留词表.txt> --output validation-result.json
-python scripts/build_report_docx.py <report.md> <report.docx> --project-name <name> --owner-name <owner> [--template <confirmed-template.docx>] --summary docx-build-summary.json
+python scripts/build_report_docx.py <report.md> <report.docx> --project-name <name> --owner-name <owner> --mode delivery --database <knowledge.sqlite> --project-code <project-code> --template <confirmed-template.docx> --summary docx-build-summary.json
+python scripts/audit_delivery_artifact.py <report.docx> --build-summary docx-build-summary.json --database <knowledge.sqlite> --project-code <project-code> --output delivery-artifact-audit.json
+python scripts/benchmark_report_quality.py <report.docx> --reference <human-benchmark.docx> --database <knowledge.sqlite> --project-code <project-code> --output benchmark-report.json
 python scripts/record_word_render_review.py <report.docx> <rendered-pages-dir> --reviewed-by <name> --result pass --checked-all-pages --output word-render-review.json
 python scripts/scan_reference_residue.py <draft paths...> --terms-file residual-terms.txt --output residual-scan.json
 python scripts/init_knowledge_db.py <knowledge.sqlite> --output db-init.json

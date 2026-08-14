@@ -278,6 +278,25 @@ def initialize_project(
             "word_template": "",
             "require_render_review": True,
         },
+        "knowledge": {
+            "standard_packs": [],
+            "policy_catalogs": [],
+            "mapping_threshold": 0.55,
+            "mapping_max_candidates": 3,
+            "server": {
+                "enabled": False,
+                "host": "127.0.0.1",
+                "port": 15432,
+                "database": "",
+                "user": "",
+                "schema": "medical_report_kb",
+                "password_env": "MEDICAL_FEASIBILITY_DB_PASSWORD",
+                "connect_timeout": 10,
+                "package_ids": [],
+                "policy_topics": [],
+                "allow_stale_cache": False,
+            },
+        },
         "source_roles": {
             "overrides": {},
             "default_role": "project_material",
@@ -295,6 +314,30 @@ def initialize_project(
     }
     if config_path.exists():
         config = existing_config
+        changed = False
+        if "knowledge" not in config:
+            config["knowledge"] = requested_config["knowledge"]
+            changed = True
+        else:
+            knowledge = config["knowledge"]
+            for key in ("standard_packs", "policy_catalogs", "mapping_threshold", "mapping_max_candidates"):
+                if key not in knowledge:
+                    knowledge[key] = requested_config["knowledge"][key]
+                    changed = True
+            if "server" not in knowledge:
+                knowledge["server"] = requested_config["knowledge"]["server"]
+                changed = True
+            else:
+                for key, value in requested_config["knowledge"]["server"].items():
+                    if key not in knowledge["server"]:
+                        knowledge["server"][key] = value
+                        changed = True
+        delivery = config.setdefault("delivery", {})
+        if delivery.get("require_render_review") is not True:
+            delivery["require_render_review"] = True
+            changed = True
+        if changed:
+            write_json(config_path, config)
     else:
         config = requested_config
         write_json(config_path, config)

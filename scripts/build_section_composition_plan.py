@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
+from build_dynamic_construction_outline import build_outline_nodes
 from knowledge_db import apply_migrations, connect, dump_json, load_json, now_iso, stable_id
 
 
@@ -78,6 +80,61 @@ def scope_matches(item_type: str, investment_category: str, scope_types: list[st
     return "all" in scope_types or item_type in scope_types or investment_category in scope_types
 
 
+def construction_chapter(scope: Any) -> str:
+    text = " ".join(
+        str(scope[key] or "")
+        for key in ("standard_name", "domain", "item_type", "investment_category")
+    )
+    if any(term in text for term in ("安全", "等保", "密码", "灾备", "审计", "防火墙")):
+        return "5.2.2"
+    if any(term in text for term in ("硬件", "服务器", "存储", "机房", "网络", "终端", "基础设施")):
+        return "5.2.1"
+    if any(term in text for term in ("接口", "集成", "数据", "主索引", "数据治理", "中台")):
+        return "5.1.2"
+    return "5.1.1"
+
+
+def text_grams(value: str) -> set[str]:
+    normalized = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value).casefold()
+    return {
+        normalized[index : index + 2]
+        for index in range(max(0, len(normalized) - 1))
+    }
+
+
+def rank_corpus_blocks(blocks: list[Any], query: str, limit: int = 10) -> list[Any]:
+    query_grams = text_grams(query)
+
+    def score(block: Any) -> tuple[float, int, str]:
+        candidate = f"{block['source_location']} {block['clean_text'][:500]}"
+        candidate_grams = text_grams(candidate)
+        overlap = len(query_grams & candidate_grams) / max(1, len(query_grams))
+        return (-overlap, len(block["clean_text"]), block["block_id"])
+
+    return sorted(blocks, key=score)[:limit]
+
+
+POLICY_TOPIC_GROUPS = {
+    "technical": {
+        "standardization", "hospital_platform", "hospital_informationization",
+        "interoperability", "infrastructure", "smart_hospital",
+        "electronic_medical_record", "health_informationization",
+    },
+    "security": {"data_security", "cybersecurity", "cryptography", "classified_protection"},
+    "investment": {"government_investment", "investment", "budget", "funding"},
+    "performance": {"evaluation", "performance", "benefit"},
+}
+
+
+def policy_matches_requirement(policy: Any, requirement: str) -> bool:
+    if requirement == "basis":
+        return bool(policy["basis_use"])
+    if requirement == "background":
+        return bool(policy["background_use"])
+    clause_topics = set(json.loads(policy["topic_tags_json"] or "[]"))
+    return bool(clause_topics & POLICY_TOPIC_GROUPS.get(requirement, {requirement}))
+
+
 def build_composition_plan(
     database: Path,
     project_code: str,
@@ -108,7 +165,8 @@ def build_composition_plan(
         ).fetchall()
         scopes = conn.execute(
             """
-            SELECT scope_id,item_type,investment_category,status
+            SELECT scope_id,standard_name,domain,item_type,investment_category,status,
+                   construction_mode,acceptance_target
             FROM project_scope_item WHERE project_id=? AND customer_scope=1
             """,
             (project["project_id"],),
@@ -124,24 +182,57 @@ def build_composition_plan(
         if latest_policy_run:
             policy_matches = conn.execute(
                 """
-                SELECT match_id,policy_id,basis_use,background_use,decision_status
-                FROM project_policy_match WHERE match_run_id=?
+                SELECT m.match_id,m.policy_id,m.basis_use,m.background_use,
+                       m.decision_status,c.topic_tags_json,
+                       d.validity_status,d.verification_status,
+                       c.verification_status AS clause_verification_status
+                FROM project_policy_match m
+                JOIN policy_clause c ON c.clause_id=m.clause_id
+                JOIN policy_document d ON d.policy_id=m.policy_id
+                WHERE m.match_run_id=?
                 """,
                 (latest_policy_run["match_run_id"],),
             ).fetchall()
-        corpus_blocks = conn.execute(
+        latest_catalog_run = conn.execute(
             """
-            SELECT b.block_id,b.section_role,b.reuse_class,b.review_status
-            FROM corpus_block b JOIN corpus_document d ON d.corpus_document_id=b.corpus_document_id
-            JOIN source_document s ON s.source_id=d.source_id
-            WHERE s.project_id=? AND b.review_status IN ('approved','pending')
+            SELECT catalog_match_run_id FROM policy_catalog_match_run
+            WHERE project_id=? AND status='completed'
+            ORDER BY completed_at DESC,catalog_match_run_id DESC LIMIT 1
             """,
             (project["project_id"],),
+        ).fetchone()
+        catalog_candidates = []
+        if latest_catalog_run:
+            catalog_candidates = conn.execute(
+                """
+                SELECT candidate_match_id,basis_group,suggested_use,relevance_level,
+                       score,decision_status,catalog_entry_id
+                FROM project_policy_catalog_match
+                WHERE catalog_match_run_id=? AND decision_status<>'user_excluded'
+                """,
+                (latest_catalog_run["catalog_match_run_id"],),
+            ).fetchall()
+        corpus_blocks = conn.execute(
+            """
+            SELECT b.block_id,b.section_role,b.module_code,b.clean_text,b.source_location,
+                   b.heading_path_json,
+                   b.reuse_class,b.review_status,s.source_scope
+            FROM corpus_block b JOIN corpus_document d ON d.corpus_document_id=b.corpus_document_id
+            JOIN source_document s ON s.source_id=d.source_id
+            WHERE (s.project_id=? OR s.source_scope='shared')
+              AND b.review_status IN ('approved','pending')
+              AND d.document_type=? AND d.project_type=?
+            """,
+            (project["project_id"], project["document_type"], project["project_type"]),
         ).fetchall()
         capability_maps = conn.execute(
             """
-            SELECT m.map_id,m.scope_id,m.capability_id,m.status
-            FROM scope_product_map m WHERE m.project_id=?
+            SELECT m.map_id,m.scope_id,m.capability_id,m.status,m.confidence,
+                    c.product_name,c.capability_name,c.module_name,c.selection_rules_json,
+                    c.standard_block_ids_json
+            FROM scope_product_map m
+            JOIN product_capability c ON c.capability_id=m.capability_id
+            WHERE m.project_id=?
             """,
             (project["project_id"],),
         ).fetchall()
@@ -174,14 +265,26 @@ def build_composition_plan(
                     scope["item_type"], scope["investment_category"], required_scope_types
                 )
             ]
+            if role == "construction_content":
+                matched_scopes = [
+                    scope
+                    for scope in matched_scopes
+                    if construction_chapter(scope) == chapter_code
+                ]
+            applicability_status = "applicable"
+            applicability_reason = ""
+            if role == "construction_content" and scopes and not matched_scopes:
+                applicability_status = "not_applicable"
+                applicability_reason = "已登记客户范围没有归入本建设类别；保留计划记录但不进入正文。"
+            elif role == "construction_content" and not scopes:
+                applicability_status = "pending_confirmation"
+                applicability_reason = "尚未登记客户建设范围，无法判断本建设类别是否适用。"
             matched_policies = [
                 policy
                 for policy in policy_matches
-                if ("basis" in required_policy_topics and policy["basis_use"])
-                or ("background" in required_policy_topics and policy["background_use"])
-                or any(
-                    topic not in {"basis", "background"}
-                    for topic in required_policy_topics
+                if any(
+                    policy_matches_requirement(policy, requirement)
+                    for requirement in required_policy_topics
                 )
             ]
             usable_facts = [
@@ -202,10 +305,40 @@ def build_composition_plan(
                 for category in required_fact_categories
                 if not any(fact_matches(fact["fact_key"], [category]) for fact in usable_facts)
             ]
-            if required_scope_types and not usable_scopes:
+            if required_scope_types and not usable_scopes and applicability_status != "not_applicable":
                 missing.append("scope")
-            if required_policy_topics and not usable_policies:
-                missing.append("policy")
+            for requirement in required_policy_topics:
+                if (
+                    applicability_status != "not_applicable"
+                    and not any(
+                        policy["decision_status"] == "user_confirmed"
+                        and policy_matches_requirement(policy, requirement)
+                        for policy in matched_policies
+                    )
+                ):
+                    missing.append(f"policy:{requirement}")
+            chapter_scope_ids = {
+                scope["scope_id"]
+                for scope in matched_scopes
+                if scope["status"] not in {"rejected", "not_applicable"}
+            }
+            chapter_maps = [
+                mapping
+                for mapping in capability_maps
+                if mapping["scope_id"] in chapter_scope_ids
+            ]
+            draftable_scopes = [
+                scope for scope in matched_scopes
+                if scope["status"] not in {"rejected", "not_applicable"}
+            ]
+            draftable_maps = [
+                mapping for mapping in chapter_maps
+                if mapping["status"] in {"confirmed", "candidate"}
+            ]
+            if role == "construction_content" and any(
+                mapping["status"] == "candidate" for mapping in chapter_maps
+            ):
+                missing.append("capability_mapping_review")
             generated_status = "blocked" if missing else "ready"
             conclusion_boundary = (
                 "Only confirmed/material-explicit facts and confirmed scope may be stated as certain; "
@@ -220,8 +353,8 @@ def build_composition_plan(
                   plan_id,project_id,chapter_code,section_title,blueprint_id,purpose,
                   conclusion_boundary,required_questions_json,length_min,length_max,
                   required_tables_json,forbidden_content_json,completion_rules_json,
-                  status,version_no,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  status,version_no,created_at,updated_at,applicability_status,applicability_reason
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(plan_id) DO UPDATE SET
                   section_title=excluded.section_title,
                   blueprint_id=excluded.blueprint_id,
@@ -235,6 +368,8 @@ def build_composition_plan(
                   completion_rules_json=excluded.completion_rules_json,
                   status=CASE WHEN section_composition_plan.status IN ('completed','draft')
                     THEN section_composition_plan.status ELSE excluded.status END,
+                  applicability_status=excluded.applicability_status,
+                  applicability_reason=excluded.applicability_reason,
                   updated_at=excluded.updated_at
                 """,
                 (
@@ -246,8 +381,14 @@ def build_composition_plan(
                     blueprint["purpose"],
                     conclusion_boundary,
                     dump_json(required_questions),
-                    blueprint["length_min"],
-                    blueprint["length_max"],
+                    max(
+                        outline_item.get("length_min", blueprint["length_min"]) or 0,
+                        1200 + 700 * len(draftable_scopes) + 320 * len(draftable_maps),
+                    ) if role == "construction_content" else outline_item.get("length_min", blueprint["length_min"]),
+                    max(
+                        outline_item.get("length_max", blueprint["length_max"]) or 0,
+                        int((1200 + 700 * len(draftable_scopes) + 320 * len(draftable_maps)) * 1.8),
+                    ) if role == "construction_content" else outline_item.get("length_max", blueprint["length_max"]),
                     blueprint["required_tables_json"],
                     blueprint["forbidden_content_json"],
                     blueprint["completion_rules_json"],
@@ -255,10 +396,13 @@ def build_composition_plan(
                     version_no,
                     timestamp,
                     timestamp,
+                    applicability_status,
+                    applicability_reason,
                 ),
             )
 
             sources = []
+            conn.execute("DELETE FROM section_plan_source WHERE plan_id=?", (plan_id,))
             for fact in matched_facts:
                 sources.append(
                     (
@@ -275,40 +419,103 @@ def build_composition_plan(
                     (
                         "scope",
                         scope["scope_id"],
-                        "direct" if scope["status"] == "confirmed" else "prohibited",
+                        "direct" if scope["status"] == "confirmed" else "parameterized",
                         scope["status"],
                     )
                 )
             for policy in matched_policies:
+                verified_working_evidence = (
+                    policy["validity_status"] == "current"
+                    and policy["verification_status"] == "verified"
+                    and policy["clause_verification_status"] == "verified"
+                )
                 sources.append(
                     (
                         "policy",
                         policy["match_id"],
                         "evidence"
-                        if policy["decision_status"] == "user_confirmed"
+                        if policy["decision_status"] == "user_confirmed" or verified_working_evidence
                         else "prohibited",
-                        policy["decision_status"],
+                        (
+                            f"decision_status={policy['decision_status']}; delivery_eligible=true"
+                            if policy["decision_status"] == "user_confirmed"
+                            else f"decision_status={policy['decision_status']}; working_draft_only=true"
+                        ),
                     )
                 )
-            if role in {"current_state", "problem_need", "necessity_feasibility", "construction_content"}:
-                for block in corpus_blocks:
+            if chapter_code in {"1.2.1", "1.2.2"}:
+                expected_group = "policy" if chapter_code == "1.2.1" else "standard"
+                for candidate in catalog_candidates:
+                    if candidate["basis_group"] != expected_group:
+                        continue
+                    sources.append(
+                        (
+                            "reference",
+                            candidate["candidate_match_id"],
+                            "structure_only",
+                            (
+                                "department_policy_catalog_candidate; unverified_title_only; "
+                                f"suggested_use={candidate['suggested_use']}; "
+                                f"decision_status={candidate['decision_status']}"
+                            ),
+                        )
+                    )
+            if role != "construction_content":
+                role_blocks = [
+                    block
+                    for block in corpus_blocks
+                    if block["section_role"] == role
+                    and block["review_status"] == "approved"
+                ]
+                for block in rank_corpus_blocks(
+                    role_blocks,
+                    f"{outline_item['section_title']} {blueprint['purpose']}",
+                ):
                     usage_mode = (
                         "direct" if block["review_status"] == "approved" and block["reuse_class"] == "A"
                         else "parameterized" if block["review_status"] == "approved" and block["reuse_class"] == "B"
                         else "structure_only" if block["review_status"] == "approved" and block["reuse_class"] == "C"
                         else "prohibited"
                     )
-                    sources.append(("corpus", block["block_id"], usage_mode, block["section_role"]))
+                    sources.append((
+                        "corpus", block["block_id"], usage_mode,
+                        f"role={block['section_role']}; location={block['source_location']}",
+                    ))
             if role == "construction_content":
-                for mapping in capability_maps:
+                selected_block_ids: set[str] = set()
+                for mapping in chapter_maps:
                     sources.append(
                         (
                             "capability",
                             mapping["capability_id"],
-                            "parameterized" if mapping["status"] == "confirmed" else "prohibited",
+                            "parameterized" if mapping["status"] == "confirmed" else "structure_only",
                             f"scope_id={mapping['scope_id']}; map_status={mapping['status']}",
                         )
                     )
+                    if mapping["status"] in {"confirmed", "candidate"}:
+                        selected_block_ids.update(
+                            json.loads(mapping["standard_block_ids_json"] or "[]")
+                        )
+                for block in corpus_blocks:
+                    if (
+                        block["block_id"] in selected_block_ids
+                        and block["section_role"] == "construction_content"
+                        and block["review_status"] == "approved"
+                    ):
+                        confirmed_block = any(
+                            mapping["status"] == "confirmed"
+                            and block["block_id"] in json.loads(mapping["standard_block_ids_json"] or "[]")
+                            for mapping in chapter_maps
+                        )
+                        usage_mode = (
+                            "parameterized"
+                            if confirmed_block and block["reuse_class"] in {"A", "B"}
+                            else "structure_only"
+                        )
+                        sources.append((
+                            "corpus", block["block_id"], usage_mode,
+                            f"confirmed capability block; location={block['source_location']}",
+                        ))
             for source_type, object_id, usage_mode, notes in sources:
                 plan_source_id = stable_id("PLANSOURCE", plan_id, source_type, object_id)
                 conn.execute(
@@ -321,6 +528,17 @@ def build_composition_plan(
                     """,
                     (plan_source_id, plan_id, source_type, object_id, usage_mode, notes),
                 )
+            outline_nodes = []
+            if role == "construction_content" and applicability_status != "not_applicable":
+                outline_nodes = build_outline_nodes(
+                    conn,
+                    plan_id=plan_id,
+                    chapter_code=chapter_code,
+                    scopes=draftable_scopes,
+                    capability_maps=draftable_maps,
+                    corpus_blocks=corpus_blocks,
+                    timestamp=timestamp,
+                )
             plans.append(
                 {
                     "plan_id": plan_id,
@@ -328,8 +546,15 @@ def build_composition_plan(
                     "section_title": outline_item["section_title"],
                     "section_role": role,
                     "status": existing["status"] if existing and existing["status"] in {"completed", "draft"} else generated_status,
+                    "applicability_status": applicability_status,
+                    "applicability_reason": applicability_reason,
                     "missing_source_types": missing,
                     "source_count": len(sources),
+                    "outline_node_count": len(outline_nodes),
+                    "outline_heading_levels": {
+                        str(level): sum(node["heading_level"] == level for node in outline_nodes)
+                        for level in range(4, 8)
+                    },
                 }
             )
         conn.commit()
@@ -339,7 +564,13 @@ def build_composition_plan(
         "version_no": version_no,
         "plan_count": len(plans),
         "ready_count": sum(plan["status"] == "ready" for plan in plans),
-        "blocked_count": sum(plan["status"] == "blocked" for plan in plans),
+        "blocked_count": sum(
+            plan["status"] == "blocked" and plan["applicability_status"] != "not_applicable"
+            for plan in plans
+        ),
+        "not_applicable_count": sum(
+            plan["applicability_status"] == "not_applicable" for plan in plans
+        ),
         "plans": plans,
         "applied_migrations": applied_migrations,
     }

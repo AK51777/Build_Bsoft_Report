@@ -21,7 +21,7 @@ NS = {"x": MAIN_NS, "r": REL_NS}
 HEADER_ALIASES = {
     "sequence": {"序号", "编号", "序列号"},
     "original_name": {"系统名称", "建设项", "建设内容", "项目名称", "产品名称", "模块名称"},
-    "domain": {"分类", "业务域", "所属系统", "系统分类"},
+    "domain": {"分类", "大类", "业务域", "所属系统", "系统分类"},
     "item_type": {"类型", "建设类型", "费用类型"},
     "construction_mode": {"建设方式", "建设性质", "新建/升级"},
     "quantity": {"数量", "数目"},
@@ -204,6 +204,28 @@ def detect_columns(headers: list[str]) -> dict[str, list[str]]:
     return detected
 
 
+def infer_value_driven_columns(
+    headers: list[str], records: list[dict[str, object]], detected: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    result = {field: list(columns) for field, columns in detected.items()}
+    if "construction_mode" not in result:
+        mode_terms = ("新建", "新增", "升级", "扩容", "利旧", "复用", "替换", "更换", "迁移")
+        candidates = [header for header in headers if "备注" in header or "说明" in header]
+        ranked = []
+        for header in candidates:
+            values = [str(record.get(header, "")).strip() for record in records]
+            nonempty = [value for value in values if value]
+            hits = sum(any(term in value for term in mode_terms) for value in nonempty)
+            if hits:
+                ranked.append((hits / max(1, len(nonempty)), hits, header))
+        if ranked:
+            ranked.sort(reverse=True)
+            ratio, hits, header = ranked[0]
+            if hits >= 2 or ratio >= 0.5:
+                result["construction_mode"] = [header]
+    return result
+
+
 def extract_sheet(
     package: zipfile.ZipFile,
     sheet: dict[str, str],
@@ -236,6 +258,7 @@ def extract_sheet(
             record[header] = raw_row.get(column, "")
         records.append(record)
 
+    detected_columns = infer_value_driven_columns(headers, records, detect_columns(headers))
     return {
         "name": sheet["name"],
         "state": sheet["state"],
@@ -243,7 +266,7 @@ def extract_sheet(
         "source_row_count": len(raw_rows),
         "header_row": header_row,
         "headers": headers,
-        "detected_columns": detect_columns(headers),
+        "detected_columns": detected_columns,
         "merged_ranges": merged,
         "formula_count": len(formulas),
         "formulas": formulas,

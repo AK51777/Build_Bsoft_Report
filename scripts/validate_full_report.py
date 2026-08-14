@@ -8,7 +8,8 @@ import json
 import re
 from pathlib import Path
 
-from knowledge_db import apply_migrations, connect, dump_json, now_iso, stable_id
+from knowledge_db import apply_migrations, connect, dump_json, now_iso, sha256_text, stable_id
+from validate_section_draft import HIGH_RISK_NUMBER_PATTERN, EVIDENCE_MARKER_PATTERN, visible_length
 
 
 LANGUAGE_TERMS = ("全面领先", "彻底解决", "国际一流", "必然实现", "完全满足", "确保达到")
@@ -49,9 +50,18 @@ def validate_report(
             raise RuntimeError(f"project_code {project_code} is not initialized")
         project_id = project["project_id"]
         plans = conn.execute(
-            "SELECT * FROM section_composition_plan WHERE project_id=?",
+            """
+            SELECT * FROM section_composition_plan p WHERE project_id=?
+              AND applicability_status<>'not_applicable'
+              AND version_no=(
+                SELECT MAX(p2.version_no) FROM section_composition_plan p2
+                WHERE p2.project_id=p.project_id AND p2.chapter_code=p.chapter_code
+                  AND p2.applicability_status<>'not_applicable'
+              )
+            """,
             (project_id,),
         ).fetchall()
+        active_plan_ids = {row["plan_id"] for row in plans}
         adopted = {
             row["plan_id"]: row
             for row in conn.execute(
@@ -59,7 +69,22 @@ def validate_report(
                 (project_id,),
             )
         }
+        adopted = {
+            plan_id: row for plan_id, row in adopted.items() if plan_id in active_plan_ids
+        }
         full_text = "\n".join(row["content"] for row in adopted.values())
+        adopted_manifest = [
+            {
+                "plan_id": plan_id,
+                "draft_version_id": row["draft_version_id"],
+                "version_no": row["version_no"],
+                "content_sha256": sha256_text(row["content"]),
+            }
+            for plan_id, row in sorted(adopted.items())
+        ]
+        content_sha256 = sha256_text(
+            json.dumps(adopted_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
 
         for plan in plans:
             if plan["plan_id"] not in adopted:
@@ -70,6 +95,46 @@ def validate_report(
                     "章节没有已采纳版本。",
                     [plan["plan_id"]],
                     "完成章节校验并采纳一个版本。",
+                )
+                continue
+            draft = adopted[plan["plan_id"]]
+            try:
+                check = json.loads(draft["check_result_json"] or "{}")
+            except json.JSONDecodeError:
+                check = {}
+            if check.get("status") != "passed" or check.get("content_sha256") != sha256_text(draft["content"]):
+                add(
+                    "blocking" if mode == "delivery" else "high",
+                    "draft_validation",
+                    plan["chapter_code"],
+                    "已采纳章节缺少与当前内容哈希一致的章节校验通过记录。",
+                    [draft["draft_version_id"]],
+                    "重新运行章节校验；不得直接修改数据库状态绕过采纳门禁。",
+                )
+            elif mode == "delivery" and check.get("validation_mode") != "delivery":
+                add(
+                    "blocking",
+                    "draft_validation_mode",
+                    plan["chapter_code"],
+                    "章节仅通过工作稿校验，尚未通过正式交付校验。",
+                    [draft["draft_version_id"]],
+                    "以 delivery 模式重新运行章节校验并处理全部占位与待确认项。",
+                )
+            if plan["length_min"] and visible_length(draft["content"]) < plan["length_min"]:
+                add(
+                    "blocking" if mode == "delivery" else "high",
+                    "content_depth",
+                    plan["chapter_code"],
+                    f"章节有效正文低于 {plan['length_min']} 字。",
+                    [draft["draft_version_id"]],
+                )
+            if HIGH_RISK_NUMBER_PATTERN.search(draft["content"]) and not EVIDENCE_MARKER_PATTERN.search(draft["content"]):
+                add(
+                    "blocking" if mode == "delivery" else "high",
+                    "quantitative_evidence",
+                    plan["chapter_code"],
+                    "高风险数字结论缺少来源标记。",
+                    [draft["draft_version_id"]],
                 )
         unsupported_facts = conn.execute(
             """
@@ -82,7 +147,7 @@ def validate_report(
             (project_id,),
         ).fetchall()
         for row in unsupported_facts:
-            add("high", "fact", "source-binding", "直接使用的事实没有证据绑定。", [row["fact_id"]])
+            add("blocking" if mode == "delivery" else "high", "fact", "source-binding", "直接使用的事实没有证据绑定。", [row["fact_id"]])
 
         uncovered_scopes = conn.execute(
             """
@@ -148,7 +213,8 @@ def validate_report(
             add("medium", "cross_chapter", "full-report", "已采纳正文未出现项目正式名称。")
         invalid_policy = conn.execute(
             """
-            SELECT ps.source_object_id FROM section_plan_source ps
+            SELECT DISTINCT ps.source_object_id,m.decision_status
+            FROM section_plan_source ps
             JOIN section_composition_plan p ON p.plan_id=ps.plan_id
             LEFT JOIN project_policy_match m ON m.match_id=ps.source_object_id
             WHERE p.project_id=? AND ps.source_type='policy' AND ps.usage_mode='evidence'
@@ -157,7 +223,14 @@ def validate_report(
             (project_id,),
         ).fetchall()
         for row in invalid_policy:
-            add("blocking", "policy", "source-binding", "政策证据来源未通过用户确认。", [row["source_object_id"]])
+            missing_source = row["decision_status"] is None
+            add(
+                "blocking" if missing_source or mode == "delivery" else "medium",
+                "policy",
+                "source-binding",
+                "政策证据来源不存在。" if missing_source else "政策证据已核验但尚未通过用户确认，仅可用于工作初稿。",
+                [row["source_object_id"]],
+            )
         for term in LANGUAGE_TERMS:
             if term in full_text:
                 add("medium", "language", "full-report", f"存在绝对化或宣传性表述：{term}")
@@ -198,7 +271,11 @@ def validate_report(
                 blocking_count,
                 started_at,
                 completed_at,
-                dump_json({"high_count": high_count}),
+                dump_json({
+                    "high_count": high_count,
+                    "content_sha256": content_sha256,
+                    "adopted_manifest": adopted_manifest,
+                }),
             ),
         )
         for index, issue in enumerate(issues, start=1):
@@ -231,6 +308,8 @@ def validate_report(
         "issue_count": len(issues),
         "blocking_count": blocking_count,
         "high_count": high_count,
+        "content_sha256": content_sha256,
+        "adopted_manifest": adopted_manifest,
         "issues": issues,
     }
 

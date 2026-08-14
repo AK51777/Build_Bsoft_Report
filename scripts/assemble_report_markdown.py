@@ -43,8 +43,8 @@ def chapter_key(value: str) -> tuple[int, ...]:
 
 def strip_duplicate_heading(content: str, title: str) -> str:
     lines = content.strip().splitlines()
-    if lines and re.match(r"^#{1,6}\s+", lines[0]):
-        heading = re.sub(r"^#{1,6}\s+", "", lines[0]).strip()
+    if lines and re.match(r"^#{1,7}\s+", lines[0]):
+        heading = re.sub(r"^#{1,7}\s+", "", lines[0]).strip()
         if title in heading or heading in title:
             lines = lines[1:]
     return "\n".join(lines).strip()
@@ -63,10 +63,12 @@ def assemble(database: Path, project_code: str, mode: str = "working") -> dict:
         plans = conn.execute(
             """
             SELECT * FROM section_composition_plan WHERE project_id=?
+            AND applicability_status<>'not_applicable'
             AND version_no=(
               SELECT MAX(p2.version_no) FROM section_composition_plan p2
               WHERE p2.project_id=section_composition_plan.project_id
                 AND p2.chapter_code=section_composition_plan.chapter_code
+                AND p2.applicability_status<>'not_applicable'
             )
             """,
             (project["project_id"],),

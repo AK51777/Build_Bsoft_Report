@@ -81,6 +81,11 @@ class ScopeItemsSqliteTests(unittest.TestCase):
         self.assertEqual(platform["construction_mode"], "pending_confirmation")
         self.assertIsNone(platform["quantity"])
 
+        changed_rows = [dict(first_rows[0], **{"建设方式": "利旧升级", "数量": "3"})]
+        changed, _ = normalize_payload(sample_payload(changed_rows), "PROJECT-1")
+        self.assertEqual(changed[0]["scope_id"], emr["scope_id"])
+        self.assertEqual(changed[0]["construction_mode"], "upgrade")
+
     def test_ingest_is_idempotent_and_preserves_confirmed_fields(self) -> None:
         rows = [
             {

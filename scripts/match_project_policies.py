@@ -76,6 +76,7 @@ def match(database: Path, project_code: str, topics: set[str], output_json: Path
                 SELECT p.*, c.clause_id, c.article_path, c.original_text,
                        c.normalized_summary, c.topic_tags_json,
                        c.requirement_type, c.applicability_notes,
+                       c.permitted_sections_json,c.forbidden_claims_json,
                        c.verification_status AS clause_verification_status
                 FROM policy_document p
                 JOIN policy_clause c ON c.policy_id=p.policy_id

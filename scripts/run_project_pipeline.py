@@ -8,7 +8,10 @@ import json
 from pathlib import Path
 
 from assemble_report_markdown import CHAPTER_TITLES, GROUP_TITLES, assemble, chapter_key
+from audit_delivery_artifact import audit as audit_delivery_artifact
 from build_candidate_fact_workpack import build_workpack
+from build_policy_section_material import build_material as build_policy_material
+from build_policy_section_material import to_markdown as policy_material_markdown
 from build_reference_reuse_workpack import build_workpack as build_reference_workpack
 from build_reference_reuse_workpack import to_markdown as reference_workpack_markdown
 from build_scope_baseline import build_scope_baseline
@@ -24,9 +27,12 @@ from ingest_clean_documents_sqlite import ingest_payload as ingest_clean_payload
 from ingest_document_standards import ingest as ingest_document_standards
 from ingest_policies import ingest as ingest_policies
 from ingest_scope_items_sqlite import ingest_scope_payload
+from import_policy_catalog_sqlite import import_catalog as import_policy_catalog
+from import_standard_knowledge_pack import import_pack as import_standard_pack
 from init_project_workbench import initialize_project, load_json, write_json
 from inventory_sources import build_inventory
 from knowledge_db import connect, sha256_file, sha256_text
+from map_scope_capabilities import map_capabilities
 from match_document_standards import (
     MATCHER_VERSION as DOCUMENT_STANDARD_MATCHER_VERSION,
     export_latest_match,
@@ -38,6 +44,10 @@ from match_project_policies import (
     match as match_project_policies,
     to_markdown as policy_markdown,
 )
+from match_policy_catalog_candidates import match_candidates as match_policy_catalog_candidates
+from match_policy_catalog_candidates import to_markdown as policy_catalog_markdown
+from postgres_knowledge_db import connect as connect_postgres
+from sync_postgres_knowledge_snapshot import sync as sync_postgres_knowledge
 from validate_full_report import validate_report
 from validate_project_gates import validate as validate_gates
 
@@ -69,6 +79,54 @@ def gate_status(gates: dict, *stage_codes: str) -> str:
     if any(item["result"] == "warning" for item in checks):
         return "pending_confirmation"
     return "completed"
+
+
+def postgres_args(server_config: dict) -> argparse.Namespace:
+    required = [key for key in ("database", "user") if not str(server_config.get(key, "")).strip()]
+    if required:
+        raise ValueError(f"knowledge.server is missing required fields: {required}")
+    return argparse.Namespace(
+        host=server_config.get("host", "127.0.0.1"),
+        port=int(server_config.get("port", 15432)),
+        database=server_config["database"],
+        user=server_config["user"],
+        password_env=server_config.get("password_env", "MEDICAL_FEASIBILITY_DB_PASSWORD"),
+        schema=server_config.get("schema", "medical_report_kb"),
+        connect_timeout=int(server_config.get("connect_timeout", 10)),
+    )
+
+
+def stale_snapshot_state(database: Path, project_code: str, *, mark_stale: bool) -> dict:
+    with connect(database) as connection:
+        project = connection.execute(
+            "SELECT project_id FROM project WHERE project_code=?", (project_code,)
+        ).fetchone()
+        if not project:
+            return {"snapshot_count": 0, "policies": 0, "clauses": 0}
+        if mark_stale:
+            connection.execute(
+                """
+                UPDATE shared_knowledge_snapshot
+                SET snapshot_status='stale'
+                WHERE project_id=? AND snapshot_status='current'
+                """,
+                (project["project_id"],),
+            )
+            connection.commit()
+        snapshot_count = connection.execute(
+            """
+            SELECT COUNT(*) FROM shared_knowledge_snapshot
+            WHERE project_id=? AND snapshot_status IN ('current','stale')
+            """,
+            (project["project_id"],),
+        ).fetchone()[0]
+        policies = connection.execute(
+            "SELECT COUNT(*) FROM policy_document WHERE verification_status='verified'"
+        ).fetchone()[0]
+        clauses = connection.execute(
+            "SELECT COUNT(*) FROM policy_clause WHERE verification_status='verified'"
+        ).fetchone()[0]
+    return {"snapshot_count": snapshot_count, "policies": policies, "clauses": clauses}
 
 
 def render_review_is_current(review: dict, candidate_docx: Path) -> bool:
@@ -136,6 +194,8 @@ def run_pipeline(
     jurisdiction_name: str = "",
     policy_topics: set[str] | None = None,
     word_template: Path | None = None,
+    standard_knowledge_packs: list[Path] | None = None,
+    policy_catalogs: list[Path] | None = None,
 ) -> dict:
     initialized = initialize_project(
         workbench,
@@ -157,6 +217,8 @@ def run_pipeline(
     delivery_dir = workbench / config["paths"]["delivery"]
     blockers = []
     processed = {"clean_documents": [], "scope_workbooks": [], "restricted_references": []}
+    knowledge_results = []
+    policy_catalog_results = []
 
     dependencies = check_dependencies()
     write_json(logs_dir / "dependency-check.json", dependencies)
@@ -169,6 +231,89 @@ def run_pipeline(
                 or "Use Python 3.10+ with working SQLite migrations.",
             }
         )
+
+    knowledge_config = config.get("knowledge", {})
+    policy_seed = load_json(POLICY_SEED)
+    server_config = knowledge_config.get("server", {})
+    if policy_topics is None:
+        configured_topics = set(server_config.get("policy_topics", []))
+        policy_topics = configured_topics or {
+            topic
+            for policy in policy_seed.get("policies", [])
+            for clause in policy.get("clauses", [])
+            for topic in clause.get("topic_tags", [])
+        }
+    server_sync_result: dict = {"enabled": bool(server_config.get("enabled", False))}
+    if server_sync_result["enabled"]:
+        try:
+            connection_args = postgres_args(server_config)
+            with connect_postgres(connection_args) as postgres_connection:
+                server_sync_result = {
+                    "enabled": True,
+                    **sync_postgres_knowledge(
+                        database,
+                        project_code,
+                        postgres_connection,
+                        schema=connection_args.schema,
+                        package_ids=list(server_config.get("package_ids", [])),
+                        topics=set(policy_topics),
+                    ),
+                }
+            knowledge_results.extend(server_sync_result.get("knowledge_packages", []))
+        except Exception as exc:
+            allow_stale = bool(server_config.get("allow_stale_cache", False))
+            cache_state = stale_snapshot_state(database, project_code, mark_stale=allow_stale)
+            server_sync_result = {
+                "enabled": True,
+                "status": "stale_cache" if allow_stale and cache_state["snapshot_count"] else "failed",
+                "error": str(exc),
+                "cache": cache_state,
+            }
+            if not allow_stale or not cache_state["snapshot_count"]:
+                blockers.append(
+                    {
+                        "stage": "S0_ENVIRONMENT",
+                        "reason": "postgres_knowledge_sync_failed",
+                        "required_action": (
+                            "Restore the SSH tunnel and PostgreSQL knowledge connection, or explicitly "
+                            "enable allow_stale_cache only when a reviewed local snapshot exists."
+                        ),
+                        "details": str(exc),
+                    }
+                )
+    configured_packs = [Path(value) for value in knowledge_config.get("standard_packs", [])]
+    selected_packs = list(standard_knowledge_packs or configured_packs)
+    for pack_path in selected_packs:
+        if not pack_path.is_absolute():
+            pack_path = workbench / pack_path
+        pack_path = pack_path.resolve()
+        if not pack_path.is_file():
+            blockers.append(
+                {
+                    "stage": "S0_ENVIRONMENT",
+                    "reason": "standard_knowledge_pack_not_found",
+                    "required_action": f"Provide a readable reviewed knowledge pack: {pack_path}",
+                }
+            )
+            continue
+        knowledge_results.append(import_standard_pack(database, load_json(pack_path)))
+
+    configured_catalogs = [Path(value) for value in knowledge_config.get("policy_catalogs", [])]
+    selected_catalogs = list(policy_catalogs or configured_catalogs)
+    for catalog_path in selected_catalogs:
+        if not catalog_path.is_absolute():
+            catalog_path = workbench / catalog_path
+        catalog_path = catalog_path.resolve()
+        if not catalog_path.is_file():
+            blockers.append(
+                {
+                    "stage": "S0_ENVIRONMENT",
+                    "reason": "policy_catalog_not_found",
+                    "required_action": f"Provide a readable reviewed policy catalog: {catalog_path}",
+                }
+            )
+            continue
+        policy_catalog_results.append(import_policy_catalog(database, load_json(catalog_path)))
 
     inventory_path = structured_dir / "source-inventory.json"
     inventory = build_inventory(
@@ -238,17 +383,24 @@ def run_pipeline(
                 }
             )
 
-    policy_seed = load_json(POLICY_SEED)
     standard_seed = load_json(DOCUMENT_STANDARD_SEED)
-    policy_ingest = ingest_policies(database, policy_seed)
-    standard_ingest = ingest_document_standards(database, standard_seed)
-    if policy_topics is None:
-        policy_topics = {
-            topic
-            for policy in policy_seed.get("policies", [])
-            for clause in policy.get("clauses", [])
-            for topic in clause.get("topic_tags", [])
+    synced_policy = server_sync_result.get("policy", {})
+    stale_policy = server_sync_result.get("cache", {})
+    if synced_policy.get("policies", 0):
+        policy_ingest = {
+            "policies": synced_policy.get("policies", 0),
+            "clauses": synced_policy.get("clauses", 0),
+            "source": "postgres_snapshot",
         }
+    elif server_sync_result.get("status") == "stale_cache" and stale_policy.get("policies", 0):
+        policy_ingest = {
+            "policies": stale_policy.get("policies", 0),
+            "clauses": stale_policy.get("clauses", 0),
+            "source": "stale_postgres_snapshot",
+        }
+    else:
+        policy_ingest = {**ingest_policies(database, policy_seed), "source": "bundled_seed"}
+    standard_ingest = ingest_document_standards(database, standard_seed)
     sorted_topics = sorted(policy_topics)
     with connect(database) as conn:
         project = conn.execute(
@@ -279,6 +431,15 @@ def run_pipeline(
         if existing_policy_run
         else match_project_policies(database, project_code, set(sorted_topics), None, None)
     )
+    with connect(database) as conn:
+        active_catalog = conn.execute(
+            "SELECT catalog_id FROM policy_catalog WHERE catalog_status='active' LIMIT 1"
+        ).fetchone()
+    policy_catalog_result = (
+        match_policy_catalog_candidates(database, project_code, topics=set(sorted_topics))
+        if active_catalog
+        else {"candidate_count": 0, "candidates": [], "catalog_match_run_id": ""}
+    )
     standard_result = (
         export_latest_match(database, project_code)
         if existing_standard_run
@@ -287,6 +448,18 @@ def run_pipeline(
     write_json(structured_dir / "policy-selection.json", policy_result)
     (structured_dir / "policy-matrix.md").write_text(
         policy_markdown(policy_result), encoding="utf-8"
+    )
+    write_json(structured_dir / "policy-catalog-candidates.json", policy_catalog_result)
+    (structured_dir / "policy-catalog-candidates.md").write_text(
+        policy_catalog_markdown(policy_catalog_result)
+        if policy_catalog_result.get("candidate_count")
+        else "# 部门政策目录项目候选\n\n> 当前未导入部门政策目录。\n",
+        encoding="utf-8",
+    )
+    policy_material = build_policy_material(database, project_code, mode="working")
+    write_json(structured_dir / "policy-section-material.json", policy_material)
+    (structured_dir / "policy-section-material.md").write_text(
+        policy_material_markdown(policy_material), encoding="utf-8"
     )
     write_json(structured_dir / "document-standard-selection.json", standard_result)
     (structured_dir / "document-standard-match.md").write_text(
@@ -302,6 +475,13 @@ def run_pipeline(
     write_json(structured_dir / "candidate-fact-workpack.json", fact_workpack)
     scope_baseline = build_scope_baseline(database, project_code)
     write_json(structured_dir / "scope-baseline.json", scope_baseline)
+    capability_mapping = map_capabilities(
+        database,
+        project_code,
+        threshold=float(knowledge_config.get("mapping_threshold", 0.55)),
+        max_candidates=int(knowledge_config.get("mapping_max_candidates", 3)),
+    )
+    write_json(structured_dir / "scope-capability-candidates.json", capability_mapping)
     traceability_links_path = structured_dir / "traceability-links.json"
     traceability = build_traceability_matrix(
         database,
@@ -444,8 +624,16 @@ def run_pipeline(
                         }
                     )
                     selected_template = None
+            else:
+                blockers.append(
+                    {
+                        "stage": "S8_WORD_DELIVERY",
+                        "reason": "confirmed_word_template_required",
+                        "required_action": "Provide a confirmed DOCX format template; the generic working preset cannot produce a formal delivery.",
+                    }
+                )
 
-            if not any(item.get("reason") == "word_template_not_found" for item in blockers):
+            if selected_template is not None:
                 candidate_docx = delivery_dir / "report-candidate.docx"
                 build_summary_path = logs_dir / "docx-build-summary.json"
                 build_input = {
@@ -453,6 +641,9 @@ def run_pipeline(
                     "project_name": config["project"].get("official_name", ""),
                     "owner_name": config["project"].get("owner_name", ""),
                     "template_sha256": sha256_file(selected_template) if selected_template else "",
+                    "delivery_validation_run_id": delivery_validation["validation_run_id"],
+                    "validated_content_sha256": delivery_validation["content_sha256"],
+                    "delivery_gate_version": "2.0",
                 }
                 build_input_sha256 = sha256_text(
                     json.dumps(build_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -463,6 +654,7 @@ def run_pipeline(
                 if (
                     candidate_docx.is_file()
                     and previous_summary.get("build_input_sha256") == build_input_sha256
+                    and previous_summary.get("output_sha256") == sha256_file(candidate_docx)
                 ):
                     docx_summary = previous_summary
                     docx_summary["reused_existing_candidate"] = True
@@ -475,6 +667,9 @@ def run_pipeline(
                         config["project"].get("official_name", ""),
                         config["project"].get("owner_name", ""),
                         selected_template,
+                        mode="delivery",
+                        database=database,
+                        project_code=project_code,
                     )
                     docx_summary.update(
                         {
@@ -492,14 +687,31 @@ def run_pipeline(
                     }
                 )
 
-                require_render_review = delivery_config.get("require_render_review", True)
+                artifact_audit = audit_delivery_artifact(
+                    candidate_docx,
+                    build_summary=build_summary_path,
+                    database=database,
+                    project_code=project_code,
+                )
+                write_json(logs_dir / "delivery-artifact-audit.json", artifact_audit)
+                if artifact_audit["status"] == "failed":
+                    delivery["status"] = "blocked_by_artifact_audit"
+                    blockers.append(
+                        {
+                            "stage": "S8_WORD_DELIVERY",
+                            "reason": "delivery_artifact_audit_failed",
+                            "required_action": "Resolve every blocker in 运行记录/delivery-artifact-audit.json and rebuild the DOCX.",
+                            "blocking_count": artifact_audit["blocker_count"],
+                        }
+                    )
+
                 review_path = logs_dir / "word-render-review.json"
                 review = load_json(review_path) if review_path.is_file() else {}
                 review_valid = render_review_is_current(review, candidate_docx)
-                if review_valid:
+                if review_valid and artifact_audit["status"] != "failed":
                     delivery["status"] = "delivery_ready"
                     delivery["render_review"] = "pass"
-                elif require_render_review:
+                else:
                     delivery["render_review"] = "missing_or_stale"
                     blockers.append(
                         {
@@ -511,9 +723,6 @@ def run_pipeline(
                             ),
                         }
                     )
-                else:
-                    delivery["status"] = "delivery_ready_without_render_review"
-                    delivery["render_review"] = "not_required_by_project_config"
 
     fact_gate_status = gate_status(gates, "S1_FACT")
     policy_gate_status = gate_status(gates, "S1P_POLICY")
@@ -524,10 +733,7 @@ def run_pipeline(
         if "pending_confirmation" in {fact_gate_status, policy_gate_status}
         else "completed"
     )
-    delivery_ready = delivery["status"] in {
-        "delivery_ready",
-        "delivery_ready_without_render_review",
-    }
+    delivery_ready = delivery["status"] == "delivery_ready"
     stage_results = [
         {
             "stage_code": "S0",
@@ -637,13 +843,27 @@ def run_pipeline(
         },
         "policy": {
             "seeded_policies": policy_ingest["policies"],
+            "source": policy_ingest.get("source", ""),
             "match_run_id": policy_result["match_run_id"],
             "match_count": policy_result["clause_match_count"],
+            "basis_count": len(policy_material["basis_entries"]),
+            "background_paragraph_count": len(policy_material["background_paragraphs"]),
+            "catalog_imports": policy_catalog_results,
+            "catalog_candidate_count": policy_catalog_result.get("candidate_count", 0),
+            "catalog_match_run_id": policy_catalog_result.get("catalog_match_run_id", ""),
+            "delivery_eligible": policy_material["delivery_eligible"],
         },
         "document_standard": {
             "seeded_standards": standard_ingest["standards"],
             "match_run_id": standard_result["standard_match_run_id"],
             "match_count": len(standard_result["matches"]),
+        },
+        "standard_knowledge": {
+            "server_sync": server_sync_result,
+            "packs_imported": len(knowledge_results),
+            "imports": knowledge_results,
+            "mapping_candidates": len(capability_mapping["candidates"]),
+            "unmapped_scope_items": len(capability_mapping["unmapped_scope_items"]),
         },
         "candidate_fact_counts": fact_workpack["counts"],
         "reference_reuse": {
@@ -666,6 +886,7 @@ def run_pipeline(
             "plan_count": plan_result["plan_count"],
             "ready_count": plan_result["ready_count"],
             "blocked_count": plan_result["blocked_count"],
+            "not_applicable_count": plan_result["not_applicable_count"],
         },
         "task_packages": package_result["package_count"],
         "stage_gate_overall": gates["overall"],
@@ -692,6 +913,8 @@ def main() -> int:
     parser.add_argument("--jurisdiction-name", default="")
     parser.add_argument("--policy-topic", action="append", default=[])
     parser.add_argument("--word-template", type=Path)
+    parser.add_argument("--standard-knowledge-pack", type=Path, action="append", default=[])
+    parser.add_argument("--policy-catalog", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = run_pipeline(
@@ -703,6 +926,8 @@ def main() -> int:
         jurisdiction_name=args.jurisdiction_name,
         policy_topics=set(args.policy_topic) or None,
         word_template=args.word_template,
+        standard_knowledge_packs=args.standard_knowledge_pack or None,
+        policy_catalogs=args.policy_catalog or None,
     )
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:

@@ -118,8 +118,9 @@ def ingest(database: Path, payload: dict) -> dict:
                     INSERT INTO policy_clause (
                       clause_id,policy_id,article_path,original_text,normalized_summary,
                       topic_tags_json,target_objects_json,requirement_type,
-                      applicability_notes,text_hash,verification_status
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                      applicability_notes,permitted_sections_json,forbidden_claims_json,
+                      text_hash,verification_status
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(clause_id) DO UPDATE SET
                       article_path=excluded.article_path,
                       original_text=excluded.original_text,
@@ -128,6 +129,8 @@ def ingest(database: Path, payload: dict) -> dict:
                       target_objects_json=excluded.target_objects_json,
                       requirement_type=excluded.requirement_type,
                       applicability_notes=excluded.applicability_notes,
+                      permitted_sections_json=excluded.permitted_sections_json,
+                      forbidden_claims_json=excluded.forbidden_claims_json,
                       text_hash=excluded.text_hash,
                       verification_status=excluded.verification_status
                     """,
@@ -141,6 +144,8 @@ def ingest(database: Path, payload: dict) -> dict:
                         dump_json(clause.get("target_objects", [])),
                         clause.get("requirement_type", "guiding"),
                         clause.get("applicability_notes", ""),
+                        dump_json(clause.get("permitted_sections", ["basis", "policy_background"])),
+                        dump_json(clause.get("forbidden_claims", [])),
                         text_hash,
                         clause.get("verification_status", policy.get("verification_status", "unverified")),
                     ),

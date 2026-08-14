@@ -29,11 +29,14 @@ def save_draft(
     model: str,
     prompt_version: str,
     source_type: str = "ai",
+    draft_mode: str = "delivery",
     created_by: str = "codex",
     duration_ms: int = 0,
 ) -> dict:
     if source_type not in {"ai", "manual"}:
         raise ValueError("source_type must be ai or manual")
+    if draft_mode not in {"working", "delivery"}:
+        raise ValueError("draft_mode must be working or delivery")
     if not content.strip():
         raise ValueError("draft content must not be empty")
     input_text = json.dumps(input_package, ensure_ascii=False, sort_keys=True)
@@ -63,7 +66,11 @@ def save_draft(
             raise ValueError("input package plan_id does not match the active section plan")
         if package_project.get("project_code") != project_code:
             raise ValueError("input package project_code does not match")
-        if source_type == "ai" and plan["status"] not in {"ready", "draft"}:
+        if (
+            source_type == "ai"
+            and draft_mode == "delivery"
+            and plan["status"] not in {"ready", "draft"}
+        ):
             raise RuntimeError(
                 f"AI draft blocked: section plan status is {plan['status']}"
             )
@@ -105,6 +112,7 @@ def save_draft(
                         "input_hash": input_hash,
                         "output_hash": output_hash,
                         "prompt_version": prompt_version,
+                        "draft_mode": draft_mode,
                     }
                 ),
                 created_by,
@@ -186,6 +194,7 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--prompt-version", required=True)
     parser.add_argument("--source-type", choices=("ai", "manual"), default="ai")
+    parser.add_argument("--draft-mode", choices=("working", "delivery"), default="delivery")
     parser.add_argument("--created-by", default="codex")
     parser.add_argument("--duration-ms", type=int, default=0)
     parser.add_argument("--output", type=Path)
@@ -200,6 +209,7 @@ def main() -> int:
         model=args.model,
         prompt_version=args.prompt_version,
         source_type=args.source_type,
+        draft_mode=args.draft_mode,
         created_by=args.created_by,
         duration_ms=args.duration_ms,
     )

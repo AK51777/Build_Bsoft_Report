@@ -17,6 +17,7 @@ from export_section_task_packages import export_packages  # noqa: E402
 from init_project_workbench import initialize_project  # noqa: E402
 from manage_section_draft import manage_draft  # noqa: E402
 from save_section_draft import save_draft  # noqa: E402
+from validate_section_draft import validate_draft  # noqa: E402
 
 
 BLUEPRINTS = {
@@ -95,6 +96,11 @@ class SectionDraftVersionTests(unittest.TestCase):
             self.assertEqual(duplicate["version_no"], 1)
             self.assertEqual(second["version_no"], 2)
 
+            validation = validate_draft(
+                database, "TEST-DRAFT-001", "1.1.1", 2
+            )
+            self.assertEqual(validation["status"], "passed")
+
             adopted = manage_draft(
                 database, "TEST-DRAFT-001", "1.1.1", 2, "adopt", operator="reviewer"
             )
@@ -118,6 +124,32 @@ class SectionDraftVersionTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0], 4)
             finally:
                 conn.close()
+
+    def test_unvalidated_or_thin_draft_cannot_be_adopted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            initialized = initialize_project(
+                Path(tmp) / "project", project_code="TEST-DRAFT-GATE"
+            )
+            database = Path(initialized["database"])
+            blueprints = json.loads(json.dumps(BLUEPRINTS))
+            blueprints["blueprints"][0]["length_min"] = 30
+            build_composition_plan(
+                database, "TEST-DRAFT-GATE", blueprint_payload=blueprints
+            )
+            packages = Path(tmp) / "packages"
+            export_packages(database, "TEST-DRAFT-GATE", packages)
+            package = json.loads(next(packages.glob("*.json")).read_text(encoding="utf-8"))
+            save_draft(
+                database, "TEST-DRAFT-GATE", "1.1.1", "过短。", package,
+                provider="openai", model="test-model", prompt_version="v1",
+            )
+            with self.assertRaises(RuntimeError):
+                manage_draft(database, "TEST-DRAFT-GATE", "1.1.1", 1, "adopt")
+            result = validate_draft(database, "TEST-DRAFT-GATE", "1.1.1", 1)
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("section_too_short", {item["code"] for item in result["issues"]})
+            with self.assertRaises(RuntimeError):
+                manage_draft(database, "TEST-DRAFT-GATE", "1.1.1", 1, "adopt")
 
     def test_ai_draft_is_blocked_when_plan_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

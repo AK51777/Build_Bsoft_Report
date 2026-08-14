@@ -77,6 +77,14 @@ def manage_draft(
         else:
             target_status = "adopted" if action == "adopt" else "discarded"
             if action == "adopt":
+                check_result = json.loads(draft["check_result_json"] or "{}")
+                if (
+                    check_result.get("status") != "passed"
+                    or check_result.get("content_sha256") != sha256_text(draft["content"])
+                ):
+                    raise RuntimeError(
+                        "draft adoption blocked: run validate_section_draft.py and resolve all issues"
+                    )
                 conn.execute(
                     """
                     UPDATE draft_section_version SET status='discarded',updated_at=?
