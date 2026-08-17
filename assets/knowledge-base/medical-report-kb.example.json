@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "default_profile": "default",
+  "profiles": {
+    "default": {
+      "mode": "server_required",
+      "host": "127.0.0.1",
+      "port": 15432,
+      "database": "hrr_feedback",
+      "user": "medical_report_reader",
+      "schema": "medical_report_kb",
+      "password_env": "MEDICAL_FEASIBILITY_DB_PASSWORD",
+      "connect_timeout": 10,
+      "package_ids": [
+        "STANDARDPACK-2c5c41b5a9519efc"
+      ],
+      "catalog_ids": [
+        "POLICYCATALOG-30f0ec60f3575646"
+      ],
+      "policy_topics": [],
+      "permission_scopes": {
+        "knowledge_package": [
+          "internal_company_reuse"
+        ],
+        "policy_catalog": [
+          "internal_company_reference"
+        ],
+        "policy_release": [
+          "public_policy_reference"
+        ]
+      },
+      "allow_stale_cache": false,
+      "selection": {
+        "document_type": "feasibility_study",
+        "project_type": "hospital_informationization"
+      }
+    }
+  }
+}

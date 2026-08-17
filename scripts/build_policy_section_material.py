@@ -267,7 +267,9 @@ def build_material(database: Path, project_code: str, *, mode: str = "working") 
         "catalog_match_run_id": catalog_run["catalog_match_run_id"] if catalog_run else "",
         "catalog_candidates": catalog_candidates,
         "unconfirmed_match_ids": unconfirmed,
-        "delivery_eligible": not unconfirmed,
+        # An empty policy selection is not delivery-ready: it means there is no
+        # verified basis to deliver, not that every basis has been confirmed.
+        "delivery_eligible": bool(basis_entries or paragraphs) and not unconfirmed,
     }
 
 

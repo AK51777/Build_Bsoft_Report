@@ -16,6 +16,19 @@ from knowledge_db import apply_migrations, connect, now_iso, upsert_project
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TEMPLATE = SKILL_ROOT / "assets" / "project-workbench-template"
 
+DOCUMENT_TYPE_ALIASES = {
+    "feasibility_study": "feasibility_study",
+    "可行性研究报告": "feasibility_study",
+    "可研": "feasibility_study",
+    "医疗信息化可研": "feasibility_study",
+}
+PROJECT_TYPE_ALIASES = {
+    "hospital_informationization": "hospital_informationization",
+    "医院信息化": "hospital_informationization",
+    "医疗信息化": "hospital_informationization",
+    "医院信息化建设": "hospital_informationization",
+}
+
 DATA_DIRECTORIES = (
     "原始资料",
     "数据包/清洗文本",
@@ -45,6 +58,15 @@ def write_json(path: Path, value: Any) -> None:
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def canonical_type(value: str, aliases: dict[str, str], field: str) -> str:
+    cleaned = str(value or "").strip()
+    canonical = aliases.get(cleaned)
+    if canonical:
+        return canonical
+    supported = "、".join(sorted(aliases))
+    raise ValueError(f"unsupported {field}: {cleaned!r}; supported values/aliases: {supported}")
 
 
 def render_task_book(
@@ -208,6 +230,8 @@ def initialize_project(
     project_code = project_code.strip()
     if not project_code:
         raise ValueError("project_code must not be empty")
+    document_type = canonical_type(document_type, DOCUMENT_TYPE_ALIASES, "document_type")
+    project_type = canonical_type(project_type, PROJECT_TYPE_ALIASES, "project_type")
     target_dir = target_dir.resolve()
     if target_dir.exists() and not target_dir.is_dir():
         raise NotADirectoryError(target_dir)
@@ -279,23 +303,22 @@ def initialize_project(
             "require_render_review": True,
         },
         "knowledge": {
+            "mode": "server_required",
+            "profile": "default",
+            "package_ids": [],
+            "catalog_ids": [],
+            "policy_topics": [],
+            "permission_scopes": {
+                "knowledge_package": ["internal_company_reuse"],
+                "policy_catalog": ["internal_company_reference"],
+                "policy_release": ["public_policy_reference"],
+            },
+            "allow_stale_cache": False,
+            "selection": {},
             "standard_packs": [],
             "policy_catalogs": [],
             "mapping_threshold": 0.55,
             "mapping_max_candidates": 3,
-            "server": {
-                "enabled": False,
-                "host": "127.0.0.1",
-                "port": 15432,
-                "database": "",
-                "user": "",
-                "schema": "medical_report_kb",
-                "password_env": "MEDICAL_FEASIBILITY_DB_PASSWORD",
-                "connect_timeout": 10,
-                "package_ids": [],
-                "policy_topics": [],
-                "allow_stale_cache": False,
-            },
         },
         "source_roles": {
             "overrides": {},
@@ -320,18 +343,26 @@ def initialize_project(
             changed = True
         else:
             knowledge = config["knowledge"]
-            for key in ("standard_packs", "policy_catalogs", "mapping_threshold", "mapping_max_candidates"):
+            legacy_server = knowledge.get("server") if isinstance(knowledge.get("server"), dict) else None
+            if "mode" not in knowledge:
+                knowledge["mode"] = (
+                    "server_required" if legacy_server and legacy_server.get("enabled") else "disabled"
+                )
+                changed = True
+            if "profile" not in knowledge:
+                knowledge["profile"] = "" if legacy_server else "default"
+                changed = True
+            for key in (
+                "package_ids", "catalog_ids", "policy_topics", "permission_scopes",
+                "allow_stale_cache", "selection", "standard_packs", "policy_catalogs",
+                "mapping_threshold", "mapping_max_candidates",
+            ):
                 if key not in knowledge:
                     knowledge[key] = requested_config["knowledge"][key]
                     changed = True
-            if "server" not in knowledge:
-                knowledge["server"] = requested_config["knowledge"]["server"]
+            if legacy_server is not None and "catalog_ids" not in legacy_server:
+                legacy_server["catalog_ids"] = []
                 changed = True
-            else:
-                for key, value in requested_config["knowledge"]["server"].items():
-                    if key not in knowledge["server"]:
-                        knowledge["server"][key] = value
-                        changed = True
         delivery = config.setdefault("delivery", {})
         if delivery.get("require_render_review") is not True:
             delivery["require_render_review"] = True
@@ -406,10 +437,18 @@ def main() -> int:
     parser.add_argument("--project-code", required=True)
     parser.add_argument("--official-name")
     parser.add_argument("--owner-name")
-    parser.add_argument("--document-type", default="feasibility_study")
+    parser.add_argument(
+        "--document-type",
+        default="feasibility_study",
+        help="Document type: feasibility_study (aliases: 可行性研究报告, 可研, 医疗信息化可研).",
+    )
     parser.add_argument("--jurisdiction-code", default="")
     parser.add_argument("--jurisdiction-name", default="")
-    parser.add_argument("--project-type", default="hospital_informationization")
+    parser.add_argument(
+        "--project-type",
+        default="hospital_informationization",
+        help="Project type: hospital_informationization (aliases: 医院信息化, 医疗信息化, 医院信息化建设).",
+    )
     parser.add_argument("--scope-authority")
     parser.add_argument("--acceptance-target", action="append", default=[])
     parser.add_argument("--unknown-handling", default="保留统一占位并汇总")

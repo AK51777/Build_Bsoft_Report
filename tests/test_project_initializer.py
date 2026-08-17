@@ -55,13 +55,11 @@ class ProjectInitializerTests(unittest.TestCase):
             )
             self.assertEqual(config["workflow"]["current_stage"], "0")
             self.assertEqual(config["paths"]["database"], "数据包/数据库/knowledge.sqlite")
-            self.assertFalse(config["knowledge"]["server"]["enabled"])
-            self.assertEqual(config["knowledge"]["server"]["port"], 15432)
-            self.assertEqual(
-                config["knowledge"]["server"]["password_env"],
-                "MEDICAL_FEASIBILITY_DB_PASSWORD",
-            )
-            self.assertNotIn("password", config["knowledge"]["server"])
+            self.assertEqual(config["knowledge"]["mode"], "server_required")
+            self.assertEqual(config["knowledge"]["profile"], "default")
+            self.assertEqual(config["knowledge"]["catalog_ids"], [])
+            self.assertNotIn("server", config["knowledge"])
+            self.assertNotIn("password", json.dumps(config, ensure_ascii=False).casefold())
 
             conn = sqlite3.connect(workbench / config["paths"]["database"])
             try:
@@ -107,6 +105,58 @@ class ProjectInitializerTests(unittest.TestCase):
             initialize_project(workbench, project_code="TEST-A")
             with self.assertRaises(RuntimeError):
                 initialize_project(workbench, project_code="TEST-B")
+
+    def test_normalizes_supported_chinese_type_aliases_and_rejects_unknown_types(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workbench = Path(tmp) / "project"
+            initialize_project(
+                workbench,
+                project_code="TEST-TYPE-ALIASES",
+                document_type="可行性研究报告",
+                project_type="医疗信息化",
+            )
+            config = json.loads((workbench / "project-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["project"]["document_type"], "feasibility_study")
+            self.assertEqual(
+                config["project"]["project_type"], "hospital_informationization"
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "unsupported project_type"):
+                initialize_project(
+                    Path(tmp) / "project",
+                    project_code="TEST-TYPE-UNKNOWN",
+                    project_type="未支持的项目类型",
+                )
+
+    def test_legacy_server_config_migrates_without_overwriting_existing_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workbench = Path(tmp) / "project"
+            initialize_project(workbench, project_code="TEST-LEGACY")
+            config_path = workbench / "project-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["knowledge"] = {
+                "server": {
+                    "enabled": True,
+                    "host": "legacy-host",
+                    "port": 6543,
+                    "database": "legacy-db",
+                    "user": "legacy-reader",
+                    "package_ids": ["PACK-LEGACY"],
+                    "allow_stale_cache": True,
+                },
+                "mapping_threshold": 0.91,
+            }
+            config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            initialize_project(workbench, project_code="TEST-LEGACY")
+            migrated = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(migrated["knowledge"]["mode"], "server_required")
+            self.assertEqual(migrated["knowledge"]["profile"], "")
+            self.assertEqual(migrated["knowledge"]["server"]["host"], "legacy-host")
+            self.assertEqual(migrated["knowledge"]["server"]["port"], 6543)
+            self.assertEqual(migrated["knowledge"]["server"]["catalog_ids"], [])
+            self.assertEqual(migrated["knowledge"]["mapping_threshold"], 0.91)
 
 
 if __name__ == "__main__":

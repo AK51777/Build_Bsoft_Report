@@ -79,6 +79,22 @@ def column_index(reference: str) -> int:
     return value
 
 
+def cell_coordinates(reference: str) -> tuple[int, int]:
+    match = re.fullmatch(r"([A-Z]+)(\d+)", reference.upper())
+    if not match:
+        return 0, 0
+    return column_index(match.group(1)), int(match.group(2))
+
+
+def merged_coordinates(reference: str) -> tuple[int, int, int, int] | None:
+    parts = reference.split(":", 1)
+    start_column, start_row = cell_coordinates(parts[0])
+    end_column, end_row = cell_coordinates(parts[-1])
+    if not all((start_column, start_row, end_column, end_row)):
+        return None
+    return start_column, start_row, end_column, end_row
+
+
 def read_shared_strings(package: zipfile.ZipFile) -> list[str]:
     try:
         root = ET.fromstring(package.read("xl/sharedStrings.xml"))
@@ -140,12 +156,15 @@ def read_rows(
     package: zipfile.ZipFile, part: str, shared_strings: list[str]
 ) -> tuple[list[dict[int, str]], dict[str, str], list[str]]:
     root = ET.fromstring(package.read(part))
-    rows: list[dict[int, str]] = []
+    rows_by_number: dict[int, dict[int, str]] = {}
     formulas: dict[str, str] = {}
     merged = [
         node.get("ref", "") for node in root.findall("x:mergeCells/x:mergeCell", NS)
     ]
     for row in root.findall("x:sheetData/x:row", NS):
+        row_number = int(row.get("r", "0") or 0)
+        if not row_number:
+            continue
         values: dict[int, str] = {}
         for cell in row.findall("x:c", NS):
             reference = cell.get("r", "")
@@ -155,7 +174,29 @@ def read_rows(
                 values[index] = value.strip() if isinstance(value, str) else str(value)
             if formula:
                 formulas[reference] = formula
-        rows.append(values)
+        rows_by_number[row_number] = values
+    max_row = max(rows_by_number, default=0)
+    rows = [rows_by_number.get(row_number, {}) for row_number in range(1, max_row + 1)]
+    for reference in merged:
+        coordinates = merged_coordinates(reference)
+        if coordinates is None:
+            continue
+        start_column, start_row, end_column, end_row = coordinates
+        # Vertical merges encode grouping labels (category/system). Horizontal
+        # merges commonly encode notes or totals and must not be copied into
+        # every semantic field.
+        if start_column != end_column:
+            continue
+        if start_row > len(rows):
+            continue
+        anchor = rows[start_row - 1].get(start_column, "")
+        if not anchor:
+            continue
+        for row_number in range(start_row, min(end_row, len(rows)) + 1):
+            # Styled cells inside a merged range can exist in sheet XML with an
+            # empty value, so setdefault alone is insufficient.
+            if not rows[row_number - 1].get(start_column, ""):
+                rows[row_number - 1][start_column] = anchor
     return rows, formulas, merged
 
 
@@ -226,6 +267,42 @@ def infer_value_driven_columns(
     return result
 
 
+def fill_blank_merged_domain_groups(
+    rows: list[dict[int, str]],
+    merged_ranges: list[str],
+    headers: list[str],
+) -> None:
+    """Carry a prior category into a blank vertical domain merge.
+
+    Some customer workbooks contain formally merged category ranges whose
+    anchor cell is empty. Carrying the prior category is safe for a domain
+    column, but doing the same for a system/name column could invent a parent.
+    """
+    domain_aliases = HEADER_ALIASES["domain"]
+    for reference in merged_ranges:
+        coordinates = merged_coordinates(reference)
+        if coordinates is None:
+            continue
+        start_column, start_row, end_column, end_row = coordinates
+        if start_column != end_column or not (1 <= start_column <= len(headers)):
+            continue
+        header = headers[start_column - 1]
+        if header not in domain_aliases and not any(alias in header for alias in domain_aliases):
+            continue
+        if start_row > len(rows) or rows[start_row - 1].get(start_column, ""):
+            continue
+        prior = ""
+        for row_number in range(start_row - 1, 0, -1):
+            prior = rows[row_number - 1].get(start_column, "")
+            if prior:
+                break
+        if not prior:
+            continue
+        for row_number in range(start_row, min(end_row, len(rows)) + 1):
+            if not rows[row_number - 1].get(start_column, ""):
+                rows[row_number - 1][start_column] = prior
+
+
 def extract_sheet(
     package: zipfile.ZipFile,
     sheet: dict[str, str],
@@ -246,6 +323,7 @@ def extract_sheet(
         normalized_header(header_values.get(column, ""), column, used)
         for column in range(1, max_column + 1)
     ]
+    fill_blank_merged_domain_groups(raw_rows, merged, headers)
 
     records: list[dict[str, object]] = []
     for source_row_number, raw_row in enumerate(

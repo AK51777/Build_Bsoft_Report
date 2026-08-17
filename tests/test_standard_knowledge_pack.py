@@ -133,6 +133,23 @@ class StandardKnowledgePackTests(unittest.TestCase):
                 ).fetchall()
                 self.assertIn(("capability", "parameterized"), source_types)
                 self.assertIn(("corpus", "parameterized"), source_types)
+                planned_block_ids = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT source_object_id FROM section_plan_source "
+                        "WHERE plan_id=? AND source_type='corpus'",
+                        (plan_id,),
+                    )
+                }
+                outline_block_ids = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT source_object_id FROM section_outline_node "
+                        "WHERE plan_id=? AND source_type='corpus'",
+                        (plan_id,),
+                    )
+                }
+                self.assertEqual(planned_block_ids, outline_block_ids)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM project_scope_item").fetchone()[0], 1)
             finally:
                 conn.close()

@@ -38,7 +38,7 @@ def executable_status(name: str, candidates: list[Path], required_for: str) -> d
     }
 
 
-def check_dependencies() -> dict:
+def check_dependencies(knowledge_mode: str = "disabled") -> dict:
     python_ok = sys.version_info >= (3, 10)
     with sqlite3.connect(":memory:") as conn:
         sqlite_version = conn.execute("SELECT sqlite_version()").fetchone()[0]
@@ -81,11 +81,14 @@ def check_dependencies() -> dict:
         ),
     ]
     docx_available = next(item["available"] for item in modules if item["name"] == "docx")
+    psycopg_available = next(item["available"] for item in modules if item["name"] == "psycopg")
     renderer_available = any(
         item["available"] for item in executables if item["name"] in {"soffice", "winword"}
     )
     core_ready = python_ok and not migration_error
     word_candidate_ready = core_ready and docx_available
+    postgres_required = knowledge_mode == "server_required"
+    knowledge_ready = core_ready and (psycopg_available or not postgres_required)
     return {
         "platform": {"os": os.name, "python": sys.version.split()[0]},
         "core": {
@@ -106,8 +109,19 @@ def check_dependencies() -> dict:
             "visual_delivery_ready": False,
             "note": "visual_delivery_ready becomes true only after an actual DOCX render and page inspection",
         },
+        "knowledge": {
+            "mode": knowledge_mode,
+            "ready": knowledge_ready,
+            "postgres_required": postgres_required,
+            "psycopg_available": psycopg_available,
+            "blocking_reason": (
+                "Install psycopg[binary] in the repository environment for server_required mode."
+                if postgres_required and not psycopg_available
+                else ""
+            ),
+        },
         "optional": {
-            "postgres_required": False,
+            "postgres_required": postgres_required,
             "rag_required": False,
             "fts5_required": False,
         },
@@ -116,15 +130,20 @@ def check_dependencies() -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--knowledge-mode",
+        choices=("server_required", "snapshot_required", "offline_pack", "disabled"),
+        default="disabled",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    result = check_dependencies()
+    result = check_dependencies(args.knowledge_mode)
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text + "\n", encoding="utf-8")
     print(text)
-    return 0 if result["core"]["ready"] else 1
+    return 0 if result["core"]["ready"] and result["knowledge"]["ready"] else 1
 
 
 if __name__ == "__main__":

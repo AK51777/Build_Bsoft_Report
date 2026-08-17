@@ -19,7 +19,7 @@
 
 公司产品能力与公共通用语料逻辑隔离。只有与 `project_scope_item` 确认映射且属于本期客户范围的能力才能进入正文。
 
-公司标准方案和标准清单先由 `build_standard_knowledge_pack.py` 在仓库外构建受审知识包，再导入项目数据库。知识包不得进入公开仓库；政策类历史段落默认 `D/prohibited`。能力映射初始状态只能为 `candidate`，必须由人工决定为 `confirmed` 后，建设章节才能按 `standard_block_ids` 精准召回对应语料，禁止按章节角色全量灌入。
+公司标准方案和标准清单先由 `build_standard_knowledge_pack.py` 在仓库外构建受审知识包，再导入项目数据库。知识包不得进入公开仓库；政策类历史段落默认 `D/prohibited`。能力映射初始状态只能为 `candidate`：在客户建设清单已明确的前提下，可按 `standard_block_ids` 限量召回受审语料，仅生成标记为 `working_only/structure_only` 的可评审初稿，不得宣称映射已确认；必须由人工决定为 `confirmed` 后，对应语料才能以 `parameterized` 进入正式交付。无论何种状态，均禁止按章节角色全量灌入；任务包只能绑定动态目录实际选中的块 ID。
 
 ## 4. 章节组合计划
 

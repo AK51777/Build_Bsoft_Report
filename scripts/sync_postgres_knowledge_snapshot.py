@@ -13,6 +13,7 @@ from import_standard_knowledge_pack import import_pack as import_local_pack
 from import_policy_catalog_sqlite import import_catalog as import_local_catalog
 from ingest_policies import ingest as ingest_local_policies
 from knowledge_db import apply_migrations, connect as connect_sqlite, dump_json, now_iso, sha256_text, stable_id
+from knowledge_snapshot import snapshot_payload_hash, validate_snapshots
 from postgres_knowledge_db import add_connection_arguments, canonical_json, connect as connect_postgres, validate_schema
 
 
@@ -27,7 +28,101 @@ def fetch_dicts(cursor) -> list[dict[str, Any]]:
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-def select_packages(connection, schema: str, package_ids: list[str]) -> list[dict[str, Any]]:
+class KnowledgeSelectionError(ValueError):
+    def __init__(self, reason: str, message: str, *, candidates: list[dict[str, Any]] | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.candidates = candidates or []
+
+
+def _candidate_summary(package: dict[str, Any], document: dict[str, Any] | None = None) -> dict[str, Any]:
+    document = document or {}
+    return {
+        "package_id": package.get("package_id", ""),
+        "title": package.get("title", ""),
+        "version": document.get("version", package.get("schema_version", "")),
+        "published_at": iso_value(package.get("published_at")),
+        "document_type": document.get("document_type", ""),
+        "project_type": document.get("project_type", ""),
+        "jurisdiction_code": document.get("jurisdiction_code", ""),
+        "permission_scope": package.get("permission_scope", ""),
+        "content_hash": package.get("content_hash", ""),
+    }
+
+
+def _package_document(connection, schema: str, package_id: str) -> dict[str, Any] | None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT * FROM {schema}.runtime_corpus_document WHERE package_id=%s ORDER BY corpus_document_id",
+            (package_id,),
+        )
+        rows = fetch_dicts(cursor)
+    if len(rows) != 1:
+        return None
+    return rows[0]
+
+
+def _package_facets(connection, schema: str, package_id: str) -> dict[str, set[str]]:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT section_role,module_code FROM {schema}.runtime_corpus_block WHERE package_id=%s ORDER BY block_id",
+            (package_id,),
+        )
+        rows = cursor.fetchall()
+    return {
+        "section_roles": {str(row[0]) for row in rows if row[0]},
+        "module_codes": {str(row[1]) for row in rows if row[1]},
+    }
+
+
+def _package_matches(
+    package: dict[str, Any],
+    document: dict[str, Any],
+    criteria: dict[str, Any],
+    allowed_permissions: set[str],
+    facets: dict[str, set[str]],
+) -> bool:
+    if allowed_permissions and package.get("permission_scope") not in allowed_permissions:
+        return False
+    for key in ("document_type", "project_type"):
+        expected = str(criteria.get(key) or "").strip()
+        if expected and str(document.get(key) or "").strip() != expected:
+            return False
+    jurisdiction = str(criteria.get("jurisdiction_code") or "").strip()
+    candidate_jurisdiction = str(document.get("jurisdiction_code") or "").strip()
+    if jurisdiction and candidate_jurisdiction not in {"", jurisdiction}:
+        return False
+    version = str(criteria.get("applicable_version") or "").strip()
+    if version and str(document.get("version") or "").strip() != version:
+        return False
+    requested_roles = criteria.get("section_roles") or (
+        [criteria["section_role"]] if criteria.get("section_role") else []
+    )
+    if requested_roles and not set(requested_roles).issubset(facets["section_roles"]):
+        return False
+    requested_modules = criteria.get("module_codes") or (
+        [criteria["module_code"]] if criteria.get("module_code") else []
+    )
+    requested_topics = criteria.get("topics") or (
+        [criteria["topic"]] if criteria.get("topic") else []
+    )
+    if (requested_modules or requested_topics) and not set(requested_modules + requested_topics).issubset(
+        facets["module_codes"]
+    ):
+        return False
+    return True
+
+
+def select_packages(
+    connection,
+    schema: str,
+    package_ids: list[str],
+    *,
+    criteria: dict[str, Any] | None = None,
+    permission_scopes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    criteria = criteria or {}
+    allowed_permissions = set(permission_scopes or [])
     with connection.cursor() as cursor:
         if package_ids:
             cursor.execute(
@@ -43,17 +138,54 @@ def select_packages(connection, schema: str, package_ids: list[str]) -> list[dic
                 f"""
                 SELECT * FROM {schema}.runtime_knowledge_package
                 ORDER BY published_at DESC NULLS LAST,package_id DESC
-                LIMIT 1
                 """
             )
         packages = fetch_dicts(cursor)
     if package_ids:
         missing = sorted(set(package_ids).difference(package["package_id"] for package in packages))
         if missing:
-            raise ValueError(f"published knowledge packages not found: {missing}")
+            raise KnowledgeSelectionError(
+                "knowledge_package_not_found",
+                f"published knowledge packages not found: {missing}",
+            )
     if not packages:
-        raise ValueError("published knowledge package not found")
-    return packages
+        raise KnowledgeSelectionError(
+            "knowledge_package_not_found", "published knowledge package not found"
+        )
+    candidates = []
+    selected = []
+    for package in packages:
+        document = _package_document(connection, schema, package["package_id"])
+        summary = _candidate_summary(package, document)
+        facets = _package_facets(connection, schema, package["package_id"])
+        summary.update({key: sorted(values) for key, values in facets.items()})
+        candidates.append(summary)
+        if document and _package_matches(package, document, criteria, allowed_permissions, facets):
+            selected.append(package)
+    if package_ids:
+        rejected = sorted(set(package_ids).difference(item["package_id"] for item in selected))
+        if rejected:
+            raise KnowledgeSelectionError(
+                "knowledge_package_not_applicable",
+                f"configured knowledge packages fail permission or applicability checks: {rejected}",
+                candidates=candidates,
+            )
+        return selected
+    if not selected:
+        raise KnowledgeSelectionError(
+            "knowledge_package_candidate_missing",
+            "no published knowledge package matches the project and permission filters",
+            candidates=candidates,
+        )
+    if len(selected) > 1:
+        raise KnowledgeSelectionError(
+            "knowledge_package_ambiguous",
+            "multiple published knowledge packages match; configure package_ids explicitly",
+            candidates=[
+                item for item in candidates if item["package_id"] in {row["package_id"] for row in selected}
+            ],
+        )
+    return selected
 
 
 def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +294,7 @@ def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dic
             "document_id": document["corpus_document_id"],
             "document_type": document["document_type"],
             "project_type": document["project_type"],
+            "version": document.get("version", ""),
             "quality_level": document["quality_level"],
             "review_status": "approved",
             "blocks": block_payload,
@@ -172,7 +305,53 @@ def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dic
     }
 
 
-def select_catalogs(connection, schema: str, catalog_ids: list[str]) -> list[dict[str, Any]]:
+def _catalog_summary(catalog: dict[str, Any]) -> dict[str, Any]:
+    metadata = catalog.get("metadata") or {}
+    return {
+        "catalog_id": catalog.get("catalog_id", ""),
+        "title": catalog.get("title", ""),
+        "catalog_scope": catalog.get("catalog_scope", ""),
+        "version": metadata.get("version", catalog.get("schema_version", "")),
+        "published_at": iso_value(catalog.get("published_at")),
+        "jurisdiction_code": metadata.get("jurisdiction_code", ""),
+        "project_type": metadata.get("project_type", ""),
+        "permission_scope": catalog.get("permission_scope", ""),
+        "record_count": catalog.get("record_count", 0),
+        "content_hash": catalog.get("content_hash", ""),
+    }
+
+
+def _catalog_matches(
+    catalog: dict[str, Any], criteria: dict[str, Any], allowed_permissions: set[str]
+) -> bool:
+    if allowed_permissions and catalog.get("permission_scope") not in allowed_permissions:
+        return False
+    metadata = catalog.get("metadata") or {}
+    expected_scope = str(criteria.get("catalog_scope") or "").strip()
+    if expected_scope and str(catalog.get("catalog_scope") or "").strip() != expected_scope:
+        return False
+    for key in ("project_type", "jurisdiction_code"):
+        expected = str(criteria.get(key) or "").strip()
+        actual = str(metadata.get(key) or "").strip()
+        if expected and actual not in {"", expected}:
+            return False
+    version = str(criteria.get("applicable_version") or "").strip()
+    actual_version = str(metadata.get("version") or "").strip()
+    if version and actual_version not in {"", version}:
+        return False
+    return int(catalog.get("record_count") or 0) > 0
+
+
+def select_catalogs(
+    connection,
+    schema: str,
+    catalog_ids: list[str],
+    *,
+    criteria: dict[str, Any] | None = None,
+    permission_scopes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    criteria = criteria or {}
+    allowed_permissions = set(permission_scopes or [])
     with connection.cursor() as cursor:
         if catalog_ids:
             cursor.execute(
@@ -194,8 +373,44 @@ def select_catalogs(connection, schema: str, catalog_ids: list[str]) -> list[dic
     if catalog_ids:
         missing = sorted(set(catalog_ids).difference(catalog["catalog_id"] for catalog in catalogs))
         if missing:
-            raise ValueError(f"published policy catalogs not found: {missing}")
-    return catalogs
+            raise KnowledgeSelectionError(
+                "policy_catalog_not_found",
+                f"published policy catalogs not found: {missing}",
+            )
+    candidates = [_catalog_summary(catalog) for catalog in catalogs]
+    selected = [
+        catalog
+        for catalog in catalogs
+        if _catalog_matches(catalog, criteria, allowed_permissions)
+    ]
+    if catalog_ids:
+        rejected = sorted(set(catalog_ids).difference(item["catalog_id"] for item in selected))
+        if rejected:
+            raise KnowledgeSelectionError(
+                "policy_catalog_not_applicable",
+                f"configured policy catalogs fail permission, applicability, or non-empty checks: {rejected}",
+                candidates=candidates,
+            )
+        return selected
+    if not catalogs:
+        raise KnowledgeSelectionError(
+            "policy_catalog_not_found",
+            "published policy catalog not found",
+        )
+    if not selected:
+        raise KnowledgeSelectionError(
+            "policy_catalog_candidate_missing",
+            "no published non-empty policy catalog matches the project and permission filters",
+            candidates=candidates,
+        )
+    if len(selected) > 1:
+        selected_ids = {row["catalog_id"] for row in selected}
+        raise KnowledgeSelectionError(
+            "policy_catalog_ambiguous",
+            "multiple published policy catalogs match; configure catalog_ids explicitly",
+            candidates=[item for item in candidates if item["catalog_id"] in selected_ids],
+        )
+    return selected
 
 
 def catalog_payload_from_rows(
@@ -345,9 +560,20 @@ def record_snapshot(
     server_schema: str,
     items: list[tuple[str, str, str, dict[str, Any]]],
     metadata: dict[str, Any],
+    permission_scope: str = "",
+    profile_name: str = "",
 ) -> str:
     fetched_at = now_iso()
     snapshot_id = stable_id("KBSNAPSHOT", project_code, source_type, source_id, content_hash)
+    snapshot_metadata = {
+        **metadata,
+        "permission_scope": permission_scope,
+        "profile_name": profile_name,
+        "item_count": len(items),
+        "snapshot_payload_hash": snapshot_payload_hash(items),
+        "integrity_status": "valid",
+        "sync_completed": True,
+    }
     with connect_sqlite(database) as connection:
         apply_migrations(connection)
         project = connection.execute(
@@ -381,7 +607,7 @@ def record_snapshot(
                 content_hash,
                 server_schema,
                 fetched_at,
-                dump_json(metadata),
+                dump_json(snapshot_metadata),
             ),
         )
         connection.execute(
@@ -411,12 +637,27 @@ def sync(
     package_ids: list[str],
     catalog_ids: list[str],
     topics: set[str],
+    criteria: dict[str, Any] | None = None,
+    permission_scopes: dict[str, list[str]] | None = None,
+    profile_name: str = "",
 ) -> dict[str, Any]:
     validate_schema(schema)
+    criteria = criteria or {}
+    permission_scopes = permission_scopes or {}
     package_results = []
-    packages = select_packages(connection, schema, package_ids)
+    packages = select_packages(
+        connection,
+        schema,
+        package_ids,
+        criteria=criteria,
+        permission_scopes=permission_scopes.get("knowledge_package", []),
+    )
     for package in packages:
         payload = build_pack_snapshot(connection, schema, package)
+        if not payload["corpus"]["blocks"] or not payload["capabilities"]:
+            raise ValueError(
+                f"knowledge package {payload['package_id']} has zero corpus blocks or capabilities"
+            )
         local_result = import_local_pack(database, payload)
         items = [
             ("corpus_block", block["block_id"], block["text_hash"], block)
@@ -443,11 +684,22 @@ def sync(
                 "blocks": len(payload["corpus"]["blocks"]),
                 "capabilities": len(payload["capabilities"]),
             },
+            permission_scope=payload["permission_scope"],
+            profile_name=profile_name,
         )
         package_results.append({**local_result, "snapshot_id": snapshot_id})
     catalog_results = []
-    for catalog in select_catalogs(connection, schema, catalog_ids):
+    catalogs = select_catalogs(
+        connection,
+        schema,
+        catalog_ids,
+        criteria=criteria,
+        permission_scopes=permission_scopes.get("policy_catalog", []),
+    )
+    for catalog in catalogs:
         payload = build_catalog_snapshot(connection, schema, catalog)
+        if not payload["records"]:
+            raise ValueError(f"policy catalog {payload['catalog_id']} has zero records")
         local_result = import_local_catalog(database, payload)
         snapshot_id = record_snapshot(
             database,
@@ -470,6 +722,8 @@ def sync(
                 "records": len(payload["records"]),
                 "candidate_only": True,
             },
+            permission_scope=payload["permission_scope"],
+            profile_name=profile_name,
         )
         catalog_results.append({**local_result, "snapshot_id": snapshot_id})
     policy_payload = build_policy_snapshot(connection, schema, topics)
@@ -497,7 +751,19 @@ def sync(
             server_schema=schema,
             items=policy_items,
             metadata={"topics": sorted(topics), **policy_result},
+            permission_scope=(permission_scopes.get("policy_release") or ["public_policy_reference"])[0],
+            profile_name=profile_name,
         )
+    selected_package_ids = [package["package_id"] for package in packages]
+    selected_catalog_ids = [catalog["catalog_id"] for catalog in catalogs]
+    validation = validate_snapshots(
+        database,
+        project_code,
+        package_ids=selected_package_ids,
+        catalog_ids=selected_catalog_ids,
+        permission_scopes=permission_scopes,
+        allow_stale=False,
+    )
     return {
         "database": str(database.resolve()),
         "project_code": project_code,
@@ -505,6 +771,9 @@ def sync(
         "policy_catalogs": catalog_results,
         "policy": {**policy_result, "snapshot_id": policy_snapshot_id},
         "server_schema": schema,
+        "selected_package_ids": selected_package_ids,
+        "selected_catalog_ids": selected_catalog_ids,
+        "snapshot_validation": validation,
     }
 
 

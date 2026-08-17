@@ -33,8 +33,11 @@ class V1MultiProjectRegressionTests(unittest.TestCase):
                 text_project,
                 project_code="REG-TEXT-001",
                 official_name="文本材料测试项目",
+                knowledge_mode="disabled",
             )
-            text_second = run_pipeline(text_project, project_code="REG-TEXT-001")
+            text_second = run_pipeline(
+                text_project, project_code="REG-TEXT-001", knowledge_mode="disabled"
+            )
             self.assertEqual(len(text_first["processed"]["clean_documents"]), 1)
             self.assertEqual(len(text_second["processed"]["clean_documents"]), 1)
             self.assertEqual(text_first["composition_plan"]["plan_count"], 28)
@@ -67,6 +70,7 @@ class V1MultiProjectRegressionTests(unittest.TestCase):
                 scope_project,
                 project_code="REG-SCOPE-001",
                 official_name="清单材料测试项目",
+                knowledge_mode="disabled",
             )
             self.assertEqual(len(scope_result["processed"]["scope_workbooks"]), 1)
             conn = sqlite3.connect(scope_result["database"])
@@ -89,6 +93,7 @@ class V1MultiProjectRegressionTests(unittest.TestCase):
                 blocked_project,
                 project_code="REG-PDF-001",
                 official_name="PDF阻断测试项目",
+                knowledge_mode="disabled",
             )
             self.assertEqual(blocked_result["status"], "blocked")
             self.assertEqual(blocked_result["blockers"][0]["reason"], "unsupported_or_ocr_required")

@@ -10,6 +10,7 @@ from pathlib import Path
 from assemble_report_markdown import CHAPTER_TITLES, GROUP_TITLES, assemble, chapter_key
 from audit_delivery_artifact import audit as audit_delivery_artifact
 from build_candidate_fact_workpack import build_workpack
+from build_evidence_bound_initial_drafts import build_initial_drafts
 from build_policy_section_material import build_material as build_policy_material
 from build_policy_section_material import to_markdown as policy_material_markdown
 from build_reference_reuse_workpack import build_workpack as build_reference_workpack
@@ -31,7 +32,15 @@ from import_policy_catalog_sqlite import import_catalog as import_policy_catalog
 from import_standard_knowledge_pack import import_pack as import_standard_pack
 from init_project_workbench import initialize_project, load_json, write_json
 from inventory_sources import build_inventory
-from knowledge_db import connect, sha256_file, sha256_text
+from knowledge_doctor import diagnose_settings
+from knowledge_db import connect, now_iso, sha256_file, sha256_text
+from knowledge_profile import (
+    KnowledgeConfigurationError,
+    public_settings,
+    redact_text,
+    resolve_knowledge_settings,
+)
+from knowledge_snapshot import KnowledgeSnapshotError, validate_snapshots
 from map_scope_capabilities import map_capabilities
 from match_document_standards import (
     MATCHER_VERSION as DOCUMENT_STANDARD_MATCHER_VERSION,
@@ -46,7 +55,9 @@ from match_project_policies import (
 )
 from match_policy_catalog_candidates import match_candidates as match_policy_catalog_candidates
 from match_policy_catalog_candidates import to_markdown as policy_catalog_markdown
+from postgres_knowledge_db import canonical_json
 from postgres_knowledge_db import connect as connect_postgres
+from sync_postgres_knowledge_snapshot import KnowledgeSelectionError
 from sync_postgres_knowledge_snapshot import sync as sync_postgres_knowledge
 from validate_full_report import validate_report
 from validate_project_gates import validate as validate_gates
@@ -94,39 +105,6 @@ def postgres_args(server_config: dict) -> argparse.Namespace:
         schema=server_config.get("schema", "medical_report_kb"),
         connect_timeout=int(server_config.get("connect_timeout", 10)),
     )
-
-
-def stale_snapshot_state(database: Path, project_code: str, *, mark_stale: bool) -> dict:
-    with connect(database) as connection:
-        project = connection.execute(
-            "SELECT project_id FROM project WHERE project_code=?", (project_code,)
-        ).fetchone()
-        if not project:
-            return {"snapshot_count": 0, "policies": 0, "clauses": 0}
-        if mark_stale:
-            connection.execute(
-                """
-                UPDATE shared_knowledge_snapshot
-                SET snapshot_status='stale'
-                WHERE project_id=? AND snapshot_status='current'
-                """,
-                (project["project_id"],),
-            )
-            connection.commit()
-        snapshot_count = connection.execute(
-            """
-            SELECT COUNT(*) FROM shared_knowledge_snapshot
-            WHERE project_id=? AND snapshot_status IN ('current','stale')
-            """,
-            (project["project_id"],),
-        ).fetchone()[0]
-        policies = connection.execute(
-            "SELECT COUNT(*) FROM policy_document WHERE verification_status='verified'"
-        ).fetchone()[0]
-        clauses = connection.execute(
-            "SELECT COUNT(*) FROM policy_clause WHERE verification_status='verified'"
-        ).fetchone()[0]
-    return {"snapshot_count": snapshot_count, "policies": policies, "clauses": clauses}
 
 
 def render_review_is_current(review: dict, candidate_docx: Path) -> bool:
@@ -184,6 +162,138 @@ def retrospective_markdown(project_code: str, delivery: dict, stage_results: lis
     return "\n".join(lines) + "\n"
 
 
+def s0_blocked_result(
+    *,
+    workbench: Path,
+    database: Path,
+    project_code: str,
+    blockers: list[dict],
+    dependencies: dict,
+    knowledge: dict,
+) -> dict:
+    stage_results = [
+        {
+            "stage_code": "S0",
+            "name": "任务定义、环境与共享知识门禁",
+            "status": "blocked",
+            "artifacts": [
+                "00-项目任务书.md",
+                "project-config.json",
+                "运行记录/dependency-check.json",
+                "运行记录/knowledge-doctor.json",
+            ],
+        }
+    ] + [
+        {
+            "stage_code": f"S{stage}",
+            "name": name,
+            "status": "not_started",
+            "artifacts": [],
+        }
+        for stage, name in (
+            (1, "资料、事实与政策证据"),
+            (2, "清单、映射与范围基线"),
+            (3, "参考方案受限复用"),
+            (4, "贯通矩阵与目录"),
+            (5, "章节任务与组成计划"),
+            (6, "正文生成与版本采纳"),
+            (7, "多维校验"),
+            (8, "Word 候选稿与渲染复核"),
+            (9, "复盘与通用沉淀候选"),
+        )
+    ]
+    return {
+        "project_code": project_code,
+        "workbench": str(workbench),
+        "database": str(database),
+        "status": "blocked",
+        "exit_code": 2,
+        "blockers": blockers,
+        "dependencies": {
+            "core_ready": dependencies["core"]["ready"],
+            "knowledge_ready": dependencies["knowledge"]["ready"],
+            "word_candidate_ready": dependencies["word"]["candidate_generation_ready"],
+            "word_visual_delivery_ready": dependencies["word"]["visual_delivery_ready"],
+        },
+        "standard_knowledge": knowledge,
+        "stage_results": stage_results,
+        "next_action": "Resolve the S0 knowledge or environment blocker, then rerun the same command.",
+    }
+
+
+def construction_knowledge_coverage(database: Path, project_code: str) -> dict:
+    with connect(database) as conn:
+        project = conn.execute(
+            "SELECT project_id FROM project WHERE project_code=?", (project_code,)
+        ).fetchone()
+        if not project:
+            return {"scope_count": 0, "scope_node_count": 0, "coverage_ratio": 0.0, "block_ids": []}
+        project_id = project["project_id"]
+        scope_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM project_scope_item
+            WHERE project_id=? AND customer_scope=1 AND status<>'not_applicable'
+            """,
+            (project_id,),
+        ).fetchone()[0]
+        scope_node_count = conn.execute(
+            """
+            SELECT COUNT(DISTINCT n.source_object_id)
+            FROM section_outline_node n
+            JOIN section_composition_plan p ON p.plan_id=n.plan_id
+            WHERE p.project_id=? AND n.node_kind='scope'
+            """,
+            (project_id,),
+        ).fetchone()[0]
+        capability_count = conn.execute(
+            """
+            SELECT COUNT(DISTINCT n.source_object_id)
+            FROM section_outline_node n
+            JOIN section_composition_plan p ON p.plan_id=n.plan_id
+            WHERE p.project_id=? AND n.node_kind='capability'
+            """,
+            (project_id,),
+        ).fetchone()[0]
+        mapped_scope_ids = set()
+        for row in conn.execute(
+            """
+            SELECT m.scope_id,c.standard_block_ids_json
+            FROM scope_product_map m
+            JOIN product_capability c ON c.capability_id=m.capability_id
+            WHERE m.project_id=? AND m.status IN ('candidate','confirmed')
+            """,
+            (project_id,),
+        ):
+            if json.loads(row["standard_block_ids_json"] or "[]"):
+                mapped_scope_ids.add(row["scope_id"])
+        block_ids = [
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT s.source_object_id
+                FROM section_plan_source s
+                JOIN section_composition_plan p ON p.plan_id=s.plan_id
+                JOIN section_blueprint b ON b.blueprint_id=p.blueprint_id
+                WHERE p.project_id=? AND b.section_role='construction_content'
+                  AND s.source_type='corpus' AND s.usage_mode IN ('direct','parameterized','structure_only')
+                ORDER BY s.source_object_id
+                """,
+                (project_id,),
+            )
+        ]
+    return {
+        "scope_count": scope_count,
+        "scope_node_count": scope_node_count,
+        "scope_coverage_count": min(scope_count, scope_node_count),
+        "coverage_ratio": round(scope_node_count / scope_count, 6) if scope_count else 1.0,
+        "capability_node_count": capability_count,
+        "mapped_scope_count": len(mapped_scope_ids),
+        "mapping_coverage_ratio": round(len(mapped_scope_ids) / scope_count, 6) if scope_count else 1.0,
+        "standard_block_count": len(block_ids),
+        "block_ids": block_ids,
+    }
+
+
 def run_pipeline(
     workbench: Path,
     *,
@@ -196,6 +306,10 @@ def run_pipeline(
     word_template: Path | None = None,
     standard_knowledge_packs: list[Path] | None = None,
     policy_catalogs: list[Path] | None = None,
+    knowledge_config_path: Path | None = None,
+    knowledge_profile: str | None = None,
+    knowledge_mode: str | None = None,
+    generate_working_drafts: bool = True,
 ) -> dict:
     initialized = initialize_project(
         workbench,
@@ -220,7 +334,10 @@ def run_pipeline(
     knowledge_results = []
     policy_catalog_results = []
 
-    dependencies = check_dependencies()
+    configured_mode = str(
+        knowledge_mode or config.get("knowledge", {}).get("mode") or "server_required"
+    )
+    dependencies = check_dependencies(configured_mode)
     write_json(logs_dir / "dependency-check.json", dependencies)
     if not dependencies["core"]["ready"]:
         blockers.append(
@@ -231,58 +348,191 @@ def run_pipeline(
                 or "Use Python 3.10+ with working SQLite migrations.",
             }
         )
+    if not dependencies["knowledge"]["ready"]:
+        blockers.append(
+            {
+                "stage": "S0_ENVIRONMENT",
+                "reason": "knowledge_dependency_check_failed",
+                "required_action": dependencies["knowledge"]["blocking_reason"],
+            }
+        )
 
     knowledge_config = config.get("knowledge", {})
     policy_seed = load_json(POLICY_SEED)
-    server_config = knowledge_config.get("server", {})
+    knowledge_settings: dict = {}
+    knowledge_manifest: dict = {}
+    server_sync_result: dict = {"enabled": False, "status": "not_requested"}
+    doctor_result: dict = {}
+    try:
+        knowledge_settings = resolve_knowledge_settings(
+            config,
+            explicit_config_path=knowledge_config_path,
+            explicit_profile=knowledge_profile,
+            explicit_mode=knowledge_mode,
+        )
+        write_json(logs_dir / "knowledge-profile.json", public_settings(knowledge_settings))
+    except KnowledgeConfigurationError as exc:
+        doctor_result = {
+            "schema_version": "1.0",
+            "status": "failed",
+            "failure_class": "configuration",
+            "reason": exc.reason,
+            "message": str(exc),
+            "details": exc.details,
+        }
+        write_json(logs_dir / "knowledge-doctor.json", doctor_result)
+        blockers.append(
+            {
+                "stage": "S0_KNOWLEDGE",
+                "reason": exc.reason,
+                "required_action": (
+                    "Create the user-level medical-report-kb.json profile or select an explicit "
+                    "snapshot/offline/disabled mode."
+                ),
+                "details": exc.details,
+            }
+        )
+
     if policy_topics is None:
-        configured_topics = set(server_config.get("policy_topics", []))
+        configured_topics = set(knowledge_settings.get("policy_topics", []))
         policy_topics = configured_topics or {
             topic
             for policy in policy_seed.get("policies", [])
             for clause in policy.get("clauses", [])
             for topic in clause.get("topic_tags", [])
         }
-    server_sync_result: dict = {"enabled": bool(server_config.get("enabled", False))}
-    if server_sync_result["enabled"]:
-        try:
-            connection_args = postgres_args(server_config)
-            with connect_postgres(connection_args) as postgres_connection:
+
+    if knowledge_settings and knowledge_settings.get("mode") != "server_required":
+        doctor_result = diagnose_settings(knowledge_settings)
+        write_json(logs_dir / "knowledge-doctor.json", doctor_result)
+
+    if knowledge_settings.get("mode") == "server_required":
+        doctor_result = diagnose_settings(knowledge_settings)
+        write_json(logs_dir / "knowledge-doctor.json", doctor_result)
+        if doctor_result["status"] != "passed":
+            blockers.append(
+                {
+                    "stage": "S0_KNOWLEDGE",
+                    "reason": f"knowledge_doctor_{doctor_result.get('failure_class') or 'failed'}",
+                    "required_action": next(
+                        (
+                            item.get("required_action")
+                            for item in doctor_result.get("checks", [])
+                            if item.get("status") == "fail" and item.get("required_action")
+                        ),
+                        "Resolve every failed knowledge doctor check.",
+                    ),
+                    "details": doctor_result.get("checks", []),
+                }
+            )
+        else:
+            try:
+                connection_args = postgres_args(knowledge_settings)
+                with connect_postgres(connection_args) as postgres_connection:
+                    server_sync_result = {
+                        "enabled": True,
+                        "status": "live_sync",
+                        "profile_name": knowledge_settings["profile_name"],
+                        **sync_postgres_knowledge(
+                            database,
+                            project_code,
+                            postgres_connection,
+                            schema=connection_args.schema,
+                            package_ids=list(knowledge_settings.get("package_ids", [])),
+                            catalog_ids=list(knowledge_settings.get("catalog_ids", [])),
+                            topics=set(policy_topics),
+                            criteria=knowledge_settings.get("selection", {}),
+                            permission_scopes=knowledge_settings.get("permission_scopes", {}),
+                            profile_name=knowledge_settings.get("profile_name", ""),
+                        ),
+                    }
+                knowledge_results.extend(server_sync_result.get("knowledge_packages", []))
+                knowledge_manifest = server_sync_result["snapshot_validation"]
+                knowledge_manifest["source"] = "live_postgres_sync"
+                knowledge_manifest["connection_status"] = "connected"
+                config["knowledge"]["profile"] = knowledge_settings["profile_name"]
+                config["knowledge"]["mode"] = "server_required"
+                config["knowledge"]["package_ids"] = server_sync_result["selected_package_ids"]
+                config["knowledge"]["catalog_ids"] = server_sync_result["selected_catalog_ids"]
+                write_json(workbench / "project-config.json", config)
+            except KnowledgeSelectionError as exc:
                 server_sync_result = {
                     "enabled": True,
-                    **sync_postgres_knowledge(
-                        database,
-                        project_code,
-                        postgres_connection,
-                        schema=connection_args.schema,
-                        package_ids=list(server_config.get("package_ids", [])),
-                        topics=set(policy_topics),
-                    ),
+                    "status": "failed",
+                    "reason": exc.reason,
+                    "error": str(exc),
+                    "candidates": exc.candidates,
                 }
-            knowledge_results.extend(server_sync_result.get("knowledge_packages", []))
-        except Exception as exc:
-            allow_stale = bool(server_config.get("allow_stale_cache", False))
-            cache_state = stale_snapshot_state(database, project_code, mark_stale=allow_stale)
-            server_sync_result = {
-                "enabled": True,
-                "status": "stale_cache" if allow_stale and cache_state["snapshot_count"] else "failed",
-                "error": str(exc),
-                "cache": cache_state,
-            }
-            if not allow_stale or not cache_state["snapshot_count"]:
                 blockers.append(
                     {
-                        "stage": "S0_ENVIRONMENT",
-                        "reason": "postgres_knowledge_sync_failed",
-                        "required_action": (
-                            "Restore the SSH tunnel and PostgreSQL knowledge connection, or explicitly "
-                            "enable allow_stale_cache only when a reviewed local snapshot exists."
-                        ),
-                        "details": str(exc),
+                        "stage": "S0_KNOWLEDGE",
+                        "reason": exc.reason,
+                        "required_action": "Select one of the listed published candidates explicitly in project-config.json.",
+                        "candidates": exc.candidates,
                     }
                 )
+            except Exception as exc:
+                safe_error = redact_text(exc, knowledge_settings)
+                server_sync_result = {
+                    "enabled": True,
+                    "status": "failed",
+                    "reason": "postgres_knowledge_sync_failed",
+                    "error": safe_error,
+                }
+                blockers.append(
+                    {
+                        "stage": "S0_KNOWLEDGE",
+                        "reason": "postgres_knowledge_sync_failed",
+                        "required_action": "Restore the configured read-only PostgreSQL connection and rerun; server_required never falls back to a stale cache.",
+                        "details": safe_error,
+                    }
+                )
+    elif knowledge_settings.get("mode") == "snapshot_required":
+        try:
+            knowledge_manifest = validate_snapshots(
+                database,
+                project_code,
+                package_ids=knowledge_settings.get("package_ids", []),
+                catalog_ids=knowledge_settings.get("catalog_ids", []),
+                permission_scopes=knowledge_settings.get("permission_scopes", {}),
+                allow_stale=bool(knowledge_settings.get("allow_stale_cache")),
+            )
+            knowledge_manifest["source"] = "local_sqlite_snapshot"
+            knowledge_manifest["connection_status"] = "not_required"
+            server_sync_result = {"enabled": False, "status": "local_snapshot"}
+        except KnowledgeSnapshotError as exc:
+            blockers.append(
+                {
+                    "stage": "S0_KNOWLEDGE",
+                    "reason": exc.reason,
+                    "required_action": "Run a successful server sync first, or repair the selected local snapshot.",
+                    "details": exc.details,
+                }
+            )
+    elif knowledge_settings.get("mode") == "disabled":
+        knowledge_manifest = {
+            "status": "disabled",
+            "source": "none",
+            "declaration": "Shared company knowledge was explicitly disabled and was not used.",
+            "counts": {"corpus_blocks": 0, "capabilities": 0, "catalog_records": 0, "policy_clauses": 0},
+            "package_ids": [],
+            "catalog_ids": [],
+            "content_hashes": {},
+            "synced_at": {},
+            "permission_scopes": {},
+            "connection_status": "not_attempted",
+        }
     configured_packs = [Path(value) for value in knowledge_config.get("standard_packs", [])]
     selected_packs = list(standard_knowledge_packs or configured_packs)
+    if selected_packs and knowledge_settings.get("mode") != "offline_pack":
+        blockers.append(
+            {
+                "stage": "S0_KNOWLEDGE",
+                "reason": "offline_pack_mode_required",
+                "required_action": "Select knowledge.mode=offline_pack before importing reviewed local knowledge packs.",
+            }
+        )
+        selected_packs = []
     for pack_path in selected_packs:
         if not pack_path.is_absolute():
             pack_path = workbench / pack_path
@@ -296,10 +546,34 @@ def run_pipeline(
                 }
             )
             continue
-        knowledge_results.append(import_standard_pack(database, load_json(pack_path)))
+        pack_payload = load_json(pack_path)
+        imported_at = now_iso()
+        logical_content_hash = sha256_text(canonical_json(pack_payload))
+        knowledge_results.append(
+            {
+                **import_standard_pack(database, pack_payload),
+                # PostgreSQL publication hashes canonical JSON content. Keep the
+                # physical file hash separately so offline and server manifests
+                # can be compared without conflating serialization differences.
+                "content_hash": logical_content_hash,
+                "file_sha256": sha256_file(pack_path),
+                "pack_path": str(pack_path),
+                "permission_scope": pack_payload.get("permission_scope", ""),
+                "synced_at": imported_at,
+            }
+        )
 
     configured_catalogs = [Path(value) for value in knowledge_config.get("policy_catalogs", [])]
     selected_catalogs = list(policy_catalogs or configured_catalogs)
+    if selected_catalogs and knowledge_settings.get("mode") != "offline_pack":
+        blockers.append(
+            {
+                "stage": "S0_KNOWLEDGE",
+                "reason": "offline_catalog_mode_required",
+                "required_action": "Select knowledge.mode=offline_pack before importing a reviewed local policy catalog.",
+            }
+        )
+        selected_catalogs = []
     for catalog_path in selected_catalogs:
         if not catalog_path.is_absolute():
             catalog_path = workbench / catalog_path
@@ -313,7 +587,96 @@ def run_pipeline(
                 }
             )
             continue
-        policy_catalog_results.append(import_policy_catalog(database, load_json(catalog_path)))
+        catalog_payload = load_json(catalog_path)
+        policy_catalog_results.append(
+            {
+                **import_policy_catalog(database, catalog_payload),
+                "permission_scope": catalog_payload.get("permission_scope", ""),
+                "synced_at": now_iso(),
+            }
+        )
+
+    if knowledge_settings.get("mode") == "offline_pack":
+        imported_package_ids = sorted(item["package_id"] for item in knowledge_results)
+        with connect(database) as conn:
+            if imported_package_ids:
+                placeholders = ",".join("?" for _ in imported_package_ids)
+                corpus_block_count = conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM corpus_block AS block
+                    JOIN corpus_document AS document
+                      ON document.corpus_document_id=block.corpus_document_id
+                    WHERE block.review_status='approved'
+                      AND document.review_status='approved'
+                      AND document.version IN ({placeholders})
+                    """,
+                    imported_package_ids,
+                ).fetchone()[0]
+            else:
+                corpus_block_count = 0
+            offline_counts = {
+                "corpus_blocks": corpus_block_count,
+                "capabilities": sum(
+                    int(item.get("capabilities_imported", 0)) for item in knowledge_results
+                ),
+                "catalog_records": sum(
+                    int(item.get("records_available", item.get("records_imported", 0)))
+                    for item in policy_catalog_results
+                ),
+                # Bundled/project policy seeds are not part of an offline
+                # standard-knowledge package or policy catalog snapshot.
+                "policy_clauses": 0,
+            }
+        if not knowledge_results or offline_counts["corpus_blocks"] < 1 or offline_counts["capabilities"] < 1:
+            blockers.append(
+                {
+                    "stage": "S0_KNOWLEDGE",
+                    "reason": "offline_pack_empty_or_missing",
+                    "required_action": "Configure at least one reviewed non-empty standard knowledge pack for offline_pack mode.",
+                    "details": offline_counts,
+                }
+            )
+        else:
+            knowledge_manifest = {
+                "status": "valid",
+                "source": "reviewed_offline_pack",
+                "package_ids": sorted(item["package_id"] for item in knowledge_results),
+                "catalog_ids": sorted(
+                    item.get("catalog_id", "") for item in policy_catalog_results if item.get("catalog_id")
+                ),
+                "content_hashes": {
+                    **{item["package_id"]: item["content_hash"] for item in knowledge_results},
+                    **{item["catalog_id"]: item["content_hash"] for item in policy_catalog_results},
+                },
+                "synced_at": {
+                    **{item["package_id"]: item["synced_at"] for item in knowledge_results},
+                    **{item["catalog_id"]: item["synced_at"] for item in policy_catalog_results},
+                },
+                "permission_scopes": {
+                    **{item["package_id"]: item["permission_scope"] for item in knowledge_results},
+                    **{item["catalog_id"]: item["permission_scope"] for item in policy_catalog_results},
+                },
+                "connection_status": "not_required",
+                "counts": offline_counts,
+            }
+
+    s0_blockers = [item for item in blockers if item.get("stage") in {"S0_ENVIRONMENT", "S0_KNOWLEDGE"}]
+    if s0_blockers:
+        early = s0_blocked_result(
+            workbench=workbench,
+            database=database,
+            project_code=project_code,
+            blockers=blockers,
+            dependencies=dependencies,
+            knowledge={
+                "settings": public_settings(knowledge_settings) if knowledge_settings else {},
+                "doctor": doctor_result,
+                "server_sync": server_sync_result,
+                "manifest": knowledge_manifest,
+            },
+        )
+        write_json(logs_dir / "pipeline-result.json", early)
+        return early
 
     inventory_path = structured_dir / "source-inventory.json"
     inventory = build_inventory(
@@ -385,19 +748,20 @@ def run_pipeline(
 
     standard_seed = load_json(DOCUMENT_STANDARD_SEED)
     synced_policy = server_sync_result.get("policy", {})
-    stale_policy = server_sync_result.get("cache", {})
     if synced_policy.get("policies", 0):
         policy_ingest = {
             "policies": synced_policy.get("policies", 0),
             "clauses": synced_policy.get("clauses", 0),
             "source": "postgres_snapshot",
         }
-    elif server_sync_result.get("status") == "stale_cache" and stale_policy.get("policies", 0):
+    elif knowledge_manifest.get("source") == "local_sqlite_snapshot" and knowledge_manifest.get("counts", {}).get("policy_clauses", 0):
         policy_ingest = {
-            "policies": stale_policy.get("policies", 0),
-            "clauses": stale_policy.get("clauses", 0),
-            "source": "stale_postgres_snapshot",
+            "policies": 0,
+            "clauses": knowledge_manifest["counts"].get("policy_clauses", 0),
+            "source": "local_postgres_snapshot",
         }
+    elif knowledge_settings.get("mode") in {"server_required", "snapshot_required"}:
+        policy_ingest = {"policies": 0, "clauses": 0, "source": "no_verified_policy_snapshot"}
     else:
         policy_ingest = {**ingest_policies(database, policy_seed), "source": "bundled_seed"}
     standard_ingest = ingest_document_standards(database, standard_seed)
@@ -518,6 +882,30 @@ def run_pipeline(
         )
     plan_result = build_composition_plan(database, project_code)
     write_json(structured_dir / "section-composition-plan.json", plan_result)
+    construction_coverage = construction_knowledge_coverage(database, project_code)
+    write_json(structured_dir / "construction-knowledge-coverage.json", construction_coverage)
+    if construction_coverage["scope_count"] and construction_coverage["coverage_ratio"] < 1.0:
+        blockers.append(
+            {
+                "stage": "S5_SECTION_PACKAGES",
+                "reason": "construction_scope_not_fully_carried",
+                "required_action": "Ensure every customer scope item has a level-4 construction outline node.",
+                "details": construction_coverage,
+            }
+        )
+    if (
+        knowledge_settings.get("mode") != "disabled"
+        and construction_coverage["scope_count"]
+        and construction_coverage["mapping_coverage_ratio"] < 1.0
+    ):
+        blockers.append(
+            {
+                "stage": "S5_SECTION_PACKAGES",
+                "reason": "construction_scope_missing_standard_knowledge",
+                "required_action": "Review scope-capability candidates or record an explicit company-knowledge gap for every unmapped scope item.",
+                "details": construction_coverage,
+            }
+        )
     outline_lines = ["# 三级目录候选", "", "> 当前目录由章节蓝图生成；正式冻结前需用户确认。", ""]
     current_chapter = ""
     current_group = ""
@@ -536,6 +924,26 @@ def run_pipeline(
         "\n".join(outline_lines) + "\n", encoding="utf-8"
     )
     package_result = export_packages(database, project_code, task_dir)
+    draft_generation = {
+        "status": "disabled",
+        "section_count": 0,
+        "adopted_count": 0,
+        "failed_count": 0,
+        "total_visible_length": 0,
+        "sections": [],
+    }
+    if generate_working_drafts:
+        draft_generation = build_initial_drafts(
+            database,
+            project_code,
+            task_dir,
+            draft_dir,
+            adopt=True,
+        )
+        draft_generation["status"] = (
+            "completed" if draft_generation["failed_count"] == 0 else "needs_review"
+        )
+    write_json(logs_dir / "evidence-bound-drafts.json", draft_generation)
     gates = validate_gates(database, project_code)
     write_json(logs_dir / "stage-gates.json", gates)
     residual_terms = read_residual_terms(workbench / "参考残留词表.txt")
@@ -739,7 +1147,10 @@ def run_pipeline(
             "stage_code": "S0",
             "name": "任务定义、环境与格式标准",
             "status": "blocked" if not dependencies["core"]["ready"] else gate_status(gates, "S0_FORMAT"),
-            "artifacts": ["00-项目任务书.md", "project-config.json", "运行记录/dependency-check.json"],
+            "artifacts": [
+                "00-项目任务书.md", "project-config.json", "运行记录/dependency-check.json",
+                "运行记录/knowledge-profile.json", "运行记录/knowledge-doctor.json",
+            ],
         },
         {
             "stage_code": "S1",
@@ -788,8 +1199,12 @@ def run_pipeline(
         {
             "stage_code": "S6",
             "name": "正文生成与版本采纳",
-            "status": "completed" if not assembly["missing_adopted_sections"] else "blocked",
-            "artifacts": ["11-正文工作稿/report-working.md"],
+            "status": (
+                "completed"
+                if not assembly["missing_adopted_sections"] and draft_generation["failed_count"] == 0
+                else "blocked"
+            ),
+            "artifacts": ["11-正文工作稿/report-working.md", "运行记录/evidence-bound-drafts.json"],
         },
         {
             "stage_code": "S7",
@@ -829,6 +1244,7 @@ def run_pipeline(
         "workbench": str(workbench),
         "database": str(database),
         "status": "blocked" if blocked else delivery["status"],
+        "exit_code": 2 if blocked else 0,
         "blockers": blockers,
         "processed": processed,
         "source_inventory": {
@@ -838,6 +1254,7 @@ def run_pipeline(
         "source_roles": source_roles["counts"],
         "dependencies": {
             "core_ready": dependencies["core"]["ready"],
+            "knowledge_ready": dependencies["knowledge"]["ready"],
             "word_candidate_ready": dependencies["word"]["candidate_generation_ready"],
             "word_visual_delivery_ready": dependencies["word"]["visual_delivery_ready"],
         },
@@ -859,7 +1276,11 @@ def run_pipeline(
             "match_count": len(standard_result["matches"]),
         },
         "standard_knowledge": {
+            "mode": knowledge_settings.get("mode", ""),
+            "profile_name": knowledge_settings.get("profile_name", ""),
+            "doctor": doctor_result,
             "server_sync": server_sync_result,
+            "manifest": knowledge_manifest,
             "packs_imported": len(knowledge_results),
             "imports": knowledge_results,
             "mapping_candidates": len(capability_mapping["candidates"]),
@@ -888,7 +1309,9 @@ def run_pipeline(
             "blocked_count": plan_result["blocked_count"],
             "not_applicable_count": plan_result["not_applicable_count"],
         },
+        "construction_knowledge_coverage": construction_coverage,
         "task_packages": package_result["package_count"],
+        "draft_generation": draft_generation,
         "stage_gate_overall": gates["overall"],
         "working_validation_status": report_validation["status"],
         "delivery": delivery,
@@ -915,7 +1338,19 @@ def main() -> int:
     parser.add_argument("--word-template", type=Path)
     parser.add_argument("--standard-knowledge-pack", type=Path, action="append", default=[])
     parser.add_argument("--policy-catalog", type=Path, action="append", default=[])
+    parser.add_argument("--knowledge-config", type=Path)
+    parser.add_argument("--knowledge-profile")
+    parser.add_argument(
+        "--knowledge-mode",
+        choices=("server_required", "snapshot_required", "offline_pack", "disabled"),
+    )
+    parser.add_argument("--no-generate-working-drafts", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--print-full-result",
+        action="store_true",
+        help="Print the complete result JSON even when --output is used.",
+    )
     args = parser.parse_args()
     result = run_pipeline(
         args.workbench,
@@ -928,12 +1363,36 @@ def main() -> int:
         word_template=args.word_template,
         standard_knowledge_packs=args.standard_knowledge_pack or None,
         policy_catalogs=args.policy_catalog or None,
+        knowledge_config_path=args.knowledge_config,
+        knowledge_profile=args.knowledge_profile,
+        knowledge_mode=args.knowledge_mode,
+        generate_working_drafts=not args.no_generate_working_drafts,
     )
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:
         write_json(args.output, result)
-    print(text)
-    return 0
+    if args.output and not args.print_full_result:
+        manifest = result.get("standard_knowledge", {}).get("manifest", {})
+        summary = {
+            "project_code": result.get("project_code", ""),
+            "status": result.get("status", ""),
+            "exit_code": result.get("exit_code", 0),
+            "workbench": result.get("workbench", ""),
+            "result_path": str(args.output.resolve()),
+            "blocker_count": len(result.get("blockers", [])),
+            "knowledge": {
+                "mode": result.get("standard_knowledge", {}).get("mode", ""),
+                "source": manifest.get("source", ""),
+                "package_ids": manifest.get("package_ids", []),
+                "catalog_ids": manifest.get("catalog_ids", []),
+                "counts": manifest.get("counts", {}),
+            },
+            "next_action": result.get("next_action", ""),
+        }
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(text)
+    return int(result.get("exit_code", 0))
 
 
 if __name__ == "__main__":

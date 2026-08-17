@@ -1,6 +1,6 @@
 ---
 name: build-medical-it-feasibility-report
-description: Create evidence-based Chinese government-investment medical informationization feasibility reports from mixed project materials such as DOCX, XLSX, PDF, Markdown, construction lists, vendor proposals, registration materials, policies, and external reference reports. Use when Codex must inventory sources, build a fact ledger, distinguish confirmed facts from unknowns and conflicts, normalize and map construction scope, evaluate reference reuse, create a traceability matrix and three-level outline, prepare chapter task packages, draft or continue chapters, validate facts/scope/investment/indicators/logic/language, or deliver a style-preserving Word report. Also use for any single stage of this workflow when prior artifacts already exist.
+description: Create evidence-based Chinese government-investment medical informationization feasibility reports from mixed project materials and reusable company knowledge. Use for medical IT feasibility studies, construction-list normalization, cleaned knowledge corpora, standard-solution reuse, shared PostgreSQL knowledge packages, project SQLite snapshot synchronization, cross-project knowledge reuse, fact and policy ledgers, scope-capability mapping, dynamic construction chapters, complete evidence-bound drafts, validation, or style-preserving Word delivery. Also use for any single stage when prior artifacts already exist.
 ---
 
 # 医疗信息化可研生成
@@ -13,13 +13,14 @@ description: Create evidence-based Chinese government-investment medical informa
 
 ## 开始前
 
-1. 读取用户指定的全部材料和已有中间产物，不依赖当前对话记忆。
-2. 识别当前处于哪个阶段，复用已经确认的产物，不重复已完成工作。
-3. 在项目目录内建立或复用独立工作台；不得搬移、覆盖或修改原始材料。
-4. 先锁定正式项目名称、文档类型、范围最高依据、核心验收目标、未知事项处理方式和目标交付格式。
-5. 若上述信息缺失，先形成任务书和少量实质性问题；不得直接生成完整正文。
-6. 存在公司标准方案和标准清单时，先构建位于项目外部的受审知识包；不得把公司原文、客户材料或知识包提交到公开 Skill 仓库。
-7. 配置了共享 PostgreSQL 时，只从已发布运行视图同步到项目 SQLite 快照；正文生成不得直接依赖实时服务器查询。服务器不可用时可以继续使用已同步快照或本地受审知识包。
+1. 读取 `references/knowledge-connection-rules.md`，解析 `knowledge.mode` 和用户级 profile；不得要求每个新项目重复填写数据库主机、端口、库名和用户。
+2. `server_required` 必须先运行知识诊断并从发布运行视图同步；`snapshot_required` 必须验证本地快照；`offline_pack` 必须导入受审离线包；`disabled` 必须明确记录未使用共享知识。任一知识门禁失败时在 S0 阻断。
+3. 同步或验证后报告 profile、连接状态、使用来源、package/catalog IDs、内容哈希、同步时间、权限范围及语料、能力、目录数量。数据量为零时禁止声称已经使用共享知识。
+4. 正文阶段只从已验证的项目级 `数据包/数据库/knowledge.sqlite` 读取知识。`server_required` 连接失败不得降级；只有 `snapshot_required` 或明确允许旧快照的运行才可复用完整、未损坏且权限匹配的快照。
+5. 读取用户指定的全部材料和已有中间产物，不依赖当前对话记忆；识别当前阶段并复用已经确认的产物。
+6. 在项目目录内建立或复用独立工作台；不得搬移、覆盖或修改原始材料。
+7. 锁定正式项目名称、文档类型、范围最高依据、核心验收目标、未知事项处理方式和目标交付格式。缺失时先形成任务书和少量实质性问题，不直接声称形成正式报告。
+8. 存在公司标准方案和标准清单时，先构建位于项目外部的受审知识包；不得把公司原文、客户材料或知识包提交到公开 Skill 仓库。
 
 复制 `assets/project-workbench-template/` 作为新项目工作台起点。项目已有目录结构时，只复制需要的模板，不强制改名或搬迁。
 
@@ -32,6 +33,7 @@ description: Create evidence-based Chinese government-investment medical informa
 - 检索、入库、排序或引用政策时，读取 `references/policy-evidence-rules.md`。
 - 识别地方编制标准、提取Word格式画像或处理缩进时，读取 `references/document-profile-rules.md`。
 - 建库、迁移或解释数据对象时，读取 `references/knowledge-base-schema.md`。
+- 解析 profile、诊断服务器、选择知识包、同步或验证快照时，读取 `references/knowledge-connection-rules.md`。
 - 处理客户清单、公司能力清单或投资对应关系时，读取 `references/scope-mapping-rules.md`。
 - 使用外地可研、历史方案或厂商方案时，读取 `references/reference-reuse-rules.md`。
 - 将高质量方案拆为语料块、映射产品能力或形成章节组合计划时，读取 `references/corpus-reuse-rules.md`。
@@ -99,8 +101,11 @@ description: Create evidence-based Chinese government-investment medical informa
 
 ```text
 python scripts/init_project_workbench.py <target-dir> --project-code <project-code> [--official-name <name>] [--owner-name <name>]
-python scripts/check_dependencies.py --output dependency-check.json
-python scripts/run_project_pipeline.py <target-dir> --project-code <project-code> [--official-name <name>] [--owner-name <name>] [--standard-knowledge-pack <reviewed-pack.json>] [--word-template <confirmed-template.docx>] --output pipeline-result.json
+python scripts/check_dependencies.py --knowledge-mode <server_required|snapshot_required|offline_pack|disabled> --output dependency-check.json
+python scripts/knowledge_doctor.py --project-root <target-dir> --profile default --json --output knowledge-doctor.json
+python scripts/provision_postgres_runtime_reader.py --database <database> --user <admin-user> --schema <schema> --output reader-plan.json  # 默认 dry-run；apply 需管理员明确批准
+python scripts/run_project_pipeline.py <target-dir> --project-code <project-code> [--official-name <name>] [--owner-name <name>] [--knowledge-profile default] [--knowledge-mode <mode>] [--standard-knowledge-pack <reviewed-pack.json>] [--word-template <confirmed-template.docx>] --output pipeline-result.json
+python scripts/query_local_knowledge.py <target-dir>/数据包/数据库/knowledge.sqlite corpus --package-id <package-id> --section-role construction_content --search <keyword> --output local-knowledge-query.json
 python scripts/inventory_sources.py <paths...> --output 01-资料清单.json
 python scripts/classify_source_roles.py source-inventory.json [--overrides source-role-overrides.json] --output source-role-register.json
 python scripts/extract_docx_structure.py <report.docx> --output docx-structure.json

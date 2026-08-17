@@ -53,7 +53,13 @@ def import_pack(database: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 payload["permission_scope"],
                 "Shared internal standard; never establishes customer facts or project scope.",
                 timestamp,
-                dump_json({"package_id": payload["package_id"], "title": payload.get("title", "")}),
+                dump_json(
+                    {
+                        "package_id": payload["package_id"],
+                        "title": payload.get("title", ""),
+                        "version": corpus.get("version", ""),
+                    }
+                ),
             ),
         )
         conn.execute(

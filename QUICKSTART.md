@@ -5,12 +5,34 @@
 使用 Codex 内置文档运行环境或 Python 3.10 以上版本：
 
 ```powershell
-python scripts/check_dependencies.py --output dependency-check.json
+python scripts/check_dependencies.py --knowledge-mode server_required --output dependency-check.json
 ```
 
 `core.ready=true` 表示本地 SQLite 主链可运行。`word.candidate_generation_ready=true` 只表示可以生成 DOCX；只有实际渲染并逐页检查后，Word 才达到视觉交付状态。
 
-## 2. 建立项目
+## 2. 配置一次用户级共享知识
+
+把 `assets/knowledge-base/medical-report-kb.example.json` 复制到：
+
+```text
+%USERPROFILE%\.codex\config\medical-report-kb.json
+```
+
+按实际只读数据库修改 host、port、database 和 user，不要把密码写入 JSON。启动 Codex/Trae 的同一进程环境应包含：
+
+```powershell
+$env:MEDICAL_FEASIBILITY_DB_PASSWORD = "<数据库密码>"
+```
+
+先诊断：
+
+```powershell
+python scripts/knowledge_doctor.py --profile default --json
+```
+
+如果数据库尚无专用只读账号，先运行 `provision_postgres_runtime_reader.py` 的默认 dry-run 并审查计划；只有数据库管理员明确批准后，才使用 `--apply --confirm-database <数据库名>`。完整命令、安全保护和手工 SQL 见 `references/knowledge-connection-rules.md` 的“运行时只读账户”。
+
+## 3. 建立项目并自动同步
 
 ```powershell
 python scripts/run_project_pipeline.py D:\projects\hospital-a `
@@ -19,24 +41,27 @@ python scripts/run_project_pipeline.py D:\projects\hospital-a `
   --owner-name "某医院" `
   --jurisdiction-code 100000 `
   --jurisdiction-name "某地区" `
-  --standard-knowledge-pack D:\private-kb\智慧医院标准知识包.json `
-  --word-template D:\templates\已确认可研格式模板.docx
+  --knowledge-profile default `
+  --word-template D:\templates\已确认可研格式模板.docx `
+  --output D:\projects\hospital-a\运行记录\pipeline-result.json
 ```
+
+指定 `--output` 时，完整 JSON 写入文件，控制台只显示项目状态、阻断数、知识包/目录 ID 和记录数等摘要；调试时增加 `--print-full-result` 才会在控制台打印完整结果。
 
 把项目材料复制到 `D:\projects\hospital-a\原始资料`，然后重复运行同一命令。原始材料不会被修改。
 
 建议把参考可研、厂商方案、政策线索和 Word 模板使用明显文件名或子目录隔开。系统会生成 `source-role-register.json`；如分类不准确，在 `project-config.json` 的 `source_roles.overrides` 中按相对路径或通配符显式指定角色后重跑。
 
-如已配置共享 PostgreSQL，先把发布知识同步到本项目 SQLite；没有服务器时可继续直接使用 `--standard-knowledge-pack`：
+流水线会自动诊断用户级 profile、从唯一适用的发布知识包和政策目录同步到项目 SQLite，再从本地快照生成章节。多个候选时会列出候选并阻断，不会默认取最新或全部。
+
+没有服务器时，必须显式选择 `offline_pack`，再提供受审知识包：
 
 ```powershell
-$env:MEDICAL_FEASIBILITY_DB_PASSWORD = "<数据库密码>"
-python scripts/sync_postgres_knowledge_snapshot.py `
-  D:\projects\hospital-a\数据包\数据库\knowledge.sqlite HOSPITAL-A-001 `
-  --package-id <知识包ID> --catalog-id <政策目录ID> --policy-topic <政策主题> `
-  --host 127.0.0.1 --port <SSH隧道本机端口> `
-  --database <数据库> --user <用户> `
-  --output D:\projects\hospital-a\运行记录\snapshot-sync.json
+python scripts/run_project_pipeline.py D:\projects\hospital-a `
+  --project-code HOSPITAL-A-001 `
+  --official-name "某医院信息化建设项目" `
+  --knowledge-mode offline_pack `
+  --standard-knowledge-pack D:\private-kb\智慧医院标准知识包.json
 ```
 
 同步只读取服务器 `runtime_*` 发布视图，并在项目库分别保存标准包、政策目录候选和正式政策条款的内容哈希快照；后续生成不依赖服务器持续在线。目录候选仍需官方核验，不会因同步自动成为正式依据。
@@ -61,7 +86,7 @@ python scripts/match_policy_catalog_candidates.py `
 
 重复的部门索引号会完整保留并标记冲突，不会覆盖或丢弃原始行。候选目录只用于找政策和搭结构，必须核验官方原文和条款后才能进入正式依据。
 
-## 3. 查看本轮结果
+## 4. 查看本轮结果
 
 优先查看：
 
@@ -78,17 +103,17 @@ python scripts/match_policy_catalog_candidates.py `
 11. `11-正文工作稿/report-working.md`：当前工作稿；
 12. `15-项目复盘.md`：十阶段状态和只允许沉淀的通用候选。
 
-## 4. 处理确认
+## 5. 处理确认
 
 - 事实使用现有事实核验包导出、填写、提取、回写流程；
 - 政策候选必须由用户确认，AI 推荐不等于正式依据；
 - 建设范围项全部确认后，运行 `build_scope_baseline.py`，再运行 `confirm_scope_baseline.py`；
-- 公司标准知识包只生成能力映射候选；填写并回写 `mapping-decisions.json` 后才允许建设章节引用对应语料；
+- 公司标准知识包先生成能力映射候选；候选语料只允许以带 `【待确认】` 标记的 `working_only/structure_only` 进入评审工作稿，不代表范围或配置已经确认；填写并回写 `mapping-decisions.json` 后，才允许以 `parameterized` 进入正式交付；
 - 部门政策目录只是候选线索；只有官方核验后的 `policy_document` / `policy_clause` 才允许作为正式依据；
 - 贯通关系写入 `数据包/结构化数据/traceability-links.json`，不要让模型猜测问题、投资、指标和效益之间的对应关系；
 - 重新运行统一入口，直到相关章节计划从 `blocked` 变为 `ready`。
 
-## 5. 生成与交付
+## 6. 生成与交付
 
 可先从任务包批量形成证据约束工作初稿：
 

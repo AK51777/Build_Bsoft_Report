@@ -65,10 +65,15 @@ def parse_number(value: Any) -> float | None:
 
 def canonical_mode(value: Any) -> str:
     text = clean_cell(value)
-    if "利旧升级" in text or ("利旧" in text and "升级" in text):
+    for marker in ("调整为", "变更为", "更正为", "改成", "改为"):
+        if marker in text:
+            replacement = text.rsplit(marker, 1)[-1]
+            replacement_mode = canonical_mode(replacement)
+            if replacement_mode != "pending_confirmation":
+                return replacement_mode
+    has_new_mode = any(term in text for term in ("新建", "新增"))
+    if ("利旧升级" in text or ("利旧" in text and "升级" in text)) and not has_new_mode:
         return "upgrade"
-    if "利旧" in text or "复用" in text:
-        return "reuse"
     matches = [code for code, terms in MODE_PATTERNS if any(term in text for term in terms)]
     return matches[0] if len(set(matches)) == 1 else "pending_confirmation"
 
@@ -102,6 +107,15 @@ def row_value(row: dict[str, Any], sheet: dict[str, Any], field: str) -> str:
     return clean_cell(row.get(header, "")) if header else ""
 
 
+def row_values(row: dict[str, Any], sheet: dict[str, Any], field: str) -> list[str]:
+    values: list[str] = []
+    for header in sheet.get("detected_columns", {}).get(field, []):
+        value = clean_cell(row.get(str(header), ""))
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
 def normalize_payload(
     payload: dict[str, Any],
     project_id: str,
@@ -117,8 +131,10 @@ def normalize_payload(
     for sheet in sheets:
         if not isinstance(sheet, dict):
             continue
-        original_name_header = selected_header(sheet, "original_name")
-        if not original_name_header:
+        original_name_headers = [
+            str(header) for header in sheet.get("detected_columns", {}).get("original_name", [])
+        ]
+        if not original_name_headers:
             issues.append(
                 {
                     "sheet": sheet.get("name", ""),
@@ -129,7 +145,12 @@ def normalize_payload(
         for row in sheet.get("rows", []):
             if not isinstance(row, dict):
                 continue
-            original_name = clean_cell(row.get(original_name_header, ""))
+            name_path = [
+                clean_cell(row.get(header, ""))
+                for header in original_name_headers
+                if clean_cell(row.get(header, ""))
+            ]
+            original_name = name_path[-1] if name_path else ""
             location = f"sheet:{sheet.get('name', '')};row:{row.get('_source_row', '')}"
             if not original_name or original_name in TOTAL_NAMES:
                 issues.append(
@@ -142,9 +163,14 @@ def normalize_payload(
                 continue
 
             standard_name = standardize_name(original_name, name_map)
-            domain = row_value(row, sheet, "domain")
+            domain_path = row_values(row, sheet, "domain") + name_path[:-1]
+            domain = " / ".join(dict.fromkeys(value for value in domain_path if value))
             item_type = row_value(row, sheet, "item_type")
-            construction_mode = canonical_mode(row_value(row, sheet, "construction_mode"))
+            mode_values = row_values(row, sheet, "construction_mode")
+            for note in row_values(row, sheet, "notes"):
+                if any(term in note for _, terms in MODE_PATTERNS for term in terms):
+                    mode_values.append(note)
+            construction_mode = canonical_mode("；".join(mode_values))
             quantity_text = row_value(row, sheet, "quantity")
             quantity = parse_number(quantity_text)
             unit = row_value(row, sheet, "unit")
@@ -162,6 +188,8 @@ def normalize_payload(
                 "source_location": location,
                 "row": row,
                 "quantity_parse_warning": bool(quantity_text and quantity is None),
+                "name_path": name_path,
+                "construction_mode_source": mode_values,
             }
             if scope_id in items_by_id:
                 items_by_id[scope_id]["source_records"].append(source_record)

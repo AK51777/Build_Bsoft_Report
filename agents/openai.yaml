@@ -1,4 +1,4 @@
-﻿interface:
+interface:
   display_name: "医疗信息化可研生成"
-  short_description: "盘点项目资料并生成可追溯、可校验的医疗信息化可研报告"
-  default_prompt: "使用 $build-medical-it-feasibility-report 从项目材料建立事实、政策、范围和共享知识快照，生成动态章节任务包与证据约束初稿；逐章校验后采纳，正式稿必须通过数据库哈希、真人基准、独立制品审计和全部页面渲染复核。"
+  short_description: "自动接入共享知识、映射建设清单并生成完整可追溯可研"
+  default_prompt: "使用 $build-medical-it-feasibility-report 解析用户级知识 profile，诊断并同步已发布知识到项目 SQLite，基于项目材料和建设清单生成动态目录、章节任务包和完整证据约束工作稿；知识门禁或质量门禁失败时明确阻断。"

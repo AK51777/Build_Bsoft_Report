@@ -6,12 +6,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from openpyxl import Workbook
+
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = SKILL_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from ingest_scope_items_sqlite import ingest_scope_payload, normalize_payload  # noqa: E402
+from extract_xlsx_scope import build_payload, fill_blank_merged_domain_groups  # noqa: E402
 from init_project_workbench import initialize_project  # noqa: E402
 
 
@@ -42,6 +45,51 @@ def sample_payload(rows: list[dict[str, object]]) -> dict[str, object]:
 
 
 class ScopeItemsSqliteTests(unittest.TestCase):
+    def test_merged_system_cells_keep_every_module_as_a_scope_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            xlsx = Path(tmp) / "scope.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "建设清单"
+            sheet.append(["序号", "大类", "系统名称", "模块名称", "备注", "数量"])
+            sheet.append([1, "临床业务", "电子病历系统", "临床文书", "利旧升级", 1])
+            sheet.append([2, None, None, "病历质控", "利旧升级改成新建", 1])
+            sheet.append([None, "说明：本行为横向合并备注，不是建设项", None, None, None, None])
+            sheet.merge_cells("B2:B3")
+            sheet.merge_cells("C2:C3")
+            sheet.merge_cells("B4:F4")
+            workbook.save(xlsx)
+
+            payload = build_payload(xlsx)
+            items, issues = normalize_payload(payload, "PROJECT-MERGED")
+
+            self.assertEqual({item["standard_name"] for item in items}, {"临床文书", "病历质控"})
+            self.assertTrue(all(item["domain"] == "临床业务 / 电子病历系统" for item in items))
+            modes = {item["standard_name"]: item["construction_mode"] for item in items}
+            self.assertEqual(modes["临床文书"], "upgrade")
+            self.assertEqual(modes["病历质控"], "new")
+            self.assertEqual(
+                len([issue for issue in issues if issue["reason"] == "blank_or_total_row"]),
+                1,
+            )
+
+    def test_blank_vertical_domain_merge_carries_prior_category_only(self) -> None:
+        rows = [
+            {2: "大类", 3: "系统名称", 4: "模块名称"},
+            {2: "临床业务", 3: "电子病历系统", 4: "临床文书"},
+            {2: "", 3: "", 4: "病历质控"},
+            {2: "", 3: "", 4: "病案管理"},
+        ]
+        fill_blank_merged_domain_groups(
+            rows,
+            ["B3:B4", "C3:C4"],
+            ["序号", "大类", "系统名称", "模块名称"],
+        )
+        self.assertEqual(rows[2][2], "临床业务")
+        self.assertEqual(rows[3][2], "临床业务")
+        self.assertEqual(rows[2][3], "")
+        self.assertEqual(rows[3][3], "")
+
     def test_normalization_uses_stable_semantic_ids(self) -> None:
         first_rows = [
             {

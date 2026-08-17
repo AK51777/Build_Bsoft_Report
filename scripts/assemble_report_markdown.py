@@ -86,13 +86,20 @@ def assemble(database: Path, project_code: str, mode: str = "working") -> dict:
     lines = [
         f"# {project['official_name']}",
         "",
-        "## 可行性研究报告",
+        f"## 可行性研究报告{'（工作稿）' if mode == 'working' else ''}",
         "",
         f"建设单位：{project['owner_name'] or '【待补充：建设单位】'}",
         "",
         f"编制日期：{date.today().isoformat()}",
         "",
     ]
+    if mode == "working":
+        lines.extend(
+            [
+                "> 【工作稿】章节“采纳”仅表示已选入本轮工作稿组装，不代表项目事实、候选能力映射、政策依据或正式交付已经确认。",
+                "",
+            ]
+        )
     current_chapter = ""
     current_group = ""
     for plan in plans:

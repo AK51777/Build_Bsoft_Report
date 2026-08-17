@@ -482,7 +482,6 @@ def build_composition_plan(
                         f"role={block['section_role']}; location={block['source_location']}",
                     ))
             if role == "construction_content":
-                selected_block_ids: set[str] = set()
                 for mapping in chapter_maps:
                     sources.append(
                         (
@@ -492,30 +491,41 @@ def build_composition_plan(
                             f"scope_id={mapping['scope_id']}; map_status={mapping['status']}",
                         )
                     )
-                    if mapping["status"] in {"confirmed", "candidate"}:
-                        selected_block_ids.update(
-                            json.loads(mapping["standard_block_ids_json"] or "[]")
+            outline_nodes = []
+            if role == "construction_content" and applicability_status != "not_applicable":
+                outline_nodes = build_outline_nodes(
+                    conn,
+                    plan_id=plan_id,
+                    chapter_code=chapter_code,
+                    scopes=draftable_scopes,
+                    capability_maps=draftable_maps,
+                    corpus_blocks=corpus_blocks,
+                    timestamp=timestamp,
+                )
+                blocks_by_id = {block["block_id"]: block for block in corpus_blocks}
+                selected_block_modes: dict[str, str] = {}
+                for node in outline_nodes:
+                    if node["source_type"] != "corpus":
+                        continue
+                    block_id = node["source_object_id"]
+                    current_mode = selected_block_modes.get(block_id, "")
+                    if node["usage_mode"] == "parameterized" or not current_mode:
+                        selected_block_modes[block_id] = node["usage_mode"]
+                for block_id in sorted(selected_block_modes):
+                    block = blocks_by_id.get(block_id)
+                    if block is None:
+                        continue
+                    sources.append(
+                        (
+                            "corpus",
+                            block_id,
+                            selected_block_modes[block_id],
+                            (
+                                "bounded construction recall selected by the dynamic outline; "
+                                f"location={block['source_location']}"
+                            ),
                         )
-                for block in corpus_blocks:
-                    if (
-                        block["block_id"] in selected_block_ids
-                        and block["section_role"] == "construction_content"
-                        and block["review_status"] == "approved"
-                    ):
-                        confirmed_block = any(
-                            mapping["status"] == "confirmed"
-                            and block["block_id"] in json.loads(mapping["standard_block_ids_json"] or "[]")
-                            for mapping in chapter_maps
-                        )
-                        usage_mode = (
-                            "parameterized"
-                            if confirmed_block and block["reuse_class"] in {"A", "B"}
-                            else "structure_only"
-                        )
-                        sources.append((
-                            "corpus", block["block_id"], usage_mode,
-                            f"confirmed capability block; location={block['source_location']}",
-                        ))
+                    )
             for source_type, object_id, usage_mode, notes in sources:
                 plan_source_id = stable_id("PLANSOURCE", plan_id, source_type, object_id)
                 conn.execute(
@@ -527,17 +537,6 @@ def build_composition_plan(
                       usage_mode=excluded.usage_mode,notes=excluded.notes
                     """,
                     (plan_source_id, plan_id, source_type, object_id, usage_mode, notes),
-                )
-            outline_nodes = []
-            if role == "construction_content" and applicability_status != "not_applicable":
-                outline_nodes = build_outline_nodes(
-                    conn,
-                    plan_id=plan_id,
-                    chapter_code=chapter_code,
-                    scopes=draftable_scopes,
-                    capability_maps=draftable_maps,
-                    corpus_blocks=corpus_blocks,
-                    timestamp=timestamp,
                 )
             plans.append(
                 {

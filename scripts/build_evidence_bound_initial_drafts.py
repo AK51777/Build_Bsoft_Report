@@ -1105,10 +1105,28 @@ def construction_section(
         for node in nodes
         if node["node_kind"] == "scope" and node["source_object_id"] in scopes_by_id
     ]
+    has_standard_knowledge = any(
+        node["node_kind"] in {"capability", "feature", "subfeature"} for node in nodes
+    )
+    working_only_knowledge = sum(
+        node["node_kind"] in {"capability", "feature", "subfeature"}
+        and node.get("usage_mode") == "structure_only"
+        for node in nodes
+    )
+    knowledge_statement = (
+        "四级标题对应客户范围，五至七级内容来自已审阅标准方案与能力映射，用于深化功能和流程说明；"
+        if has_standard_knowledge
+        else "当前没有与本节范围匹配并通过门禁的公司标准能力或语料，正文仅建立客户范围骨架并明确待补充设计内容；"
+    )
+    if working_only_knowledge:
+        knowledge_statement += (
+            f"其中{working_only_knowledge}个能力或语料节点处于【待确认】的 working_only/structure_only 状态，"
+            "仅供评审工作稿使用，不能据此扩展客户范围或直接进入正式交付；"
+        )
     lines = [
         (
             f"本节以{project['official_name']}客户建设清单为边界，按照“范围项—业务能力—功能模块—验收要点”组织建设内容。"
-            "四级标题对应客户范围，五至七级内容来自已审阅标准方案与能力映射，用于深化功能和流程说明；"
+            f"{knowledge_statement}"
             "是否纳入本期以及具体配置、接口和数量仍需在需求和设计评审中逐项确认。"
         ),
         "",
@@ -1150,9 +1168,11 @@ def construction_section(
                     ),
                     "",
                     (
-                        f"{current_scope}的交付应形成需求基线、配置或开发清单、接口与数据说明、测试用例、培训及上线记录。"
-                        "验收既检查功能是否具备，也检查关键流程能否闭环、数据是否准确、权限和日志是否有效、"
-                        "异常场景能否处理以及试运行问题是否关闭。"
+                        f"针对“{mode}”建设方式，{current_scope}不能仅按功能名称判断工作量。需求阶段应逐项比对现有版本、"
+                        "已购许可、历史定制、数据规模、在用接口、终端环境和运行保障条件；设计阶段应形成保留项、改造项、"
+                        "替换项和停用项清单，并说明数据继承、业务切换、并行验证及回退安排。交付时应建立从客户清单到需求、"
+                        "设计、采购配置、测试用例和验收证据的纵向追踪，覆盖功能闭环、数据准确性、权限日志、异常恢复、培训上线"
+                        "及问题关闭；未经现状调查或责任方确认的结论只能作为深化要求。"
                     ),
                     "",
                 ]
@@ -1166,23 +1186,51 @@ def construction_section(
                 ),
                 280,
             )
-            lines.extend(
-                [
-                    (
-                        f"{current_capability}是{current_scope}范围内的业务能力单元。"
-                        f"{description or '其具体启用范围由客户清单、现状条件和需求评审共同确定。'}"
-                        "方案设计应说明服务对象、业务流程、数据输入输出、与上下游系统的关系以及异常处置方式。"
-                    ),
-                    "",
-                    (
-                        f"{current_capability}在{current_scope}下的功能边界以客户清单和需求基线为准，"
-                        "任何子功能均不能单独转化为新增采购范围。"
-                        "涉及科室职责、临床规则、审批权限、指标口径或第三方改造的内容，由相应业务和技术责任方确认，"
-                        "并纳入需求、设计、测试和验收的同一追踪链。"
-                    ),
-                    "",
-                ]
-            )
+            prerequisites = json_list(capability.get("prerequisites_json"))
+            interface_dependencies = json_list(capability.get("interface_dependencies_json"))
+            exclusions = json_list(capability.get("exclusions_json"))
+            versions = json_list(capability.get("applicable_versions_json"))
+            if node.get("usage_mode") == "structure_only":
+                candidate_description = truncate_sentence(description, 180)
+                lines.extend(
+                    [
+                        (
+                            f"【待确认】{current_capability}是公司标准知识与{current_scope}自动映射得到的候选能力，"
+                            f"当前仅用于 working_only/structure_only 工作稿。{candidate_description or '候选说明尚需结合需求评审补充。'}"
+                            "该候选不得单独转化为新增采购范围。"
+                        ),
+                        "",
+                        (
+                            f"复核{current_scope}中的{current_capability}时，应核对服务对象、角色任务、数据规则、上下游接口、适用版本和不包含事项，"
+                            "并以客户范围确认、需求基线和测试验收链决定采用、调整或排除；确认前不得写成既定配置或实施承诺。"
+                        ),
+                        "",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        (
+                            f"{current_capability}是{current_scope}范围内已确认映射的业务能力单元。"
+                            f"{description or '其具体启用范围由客户清单、现状条件和需求评审共同确定。'}"
+                            "方案设计应说明服务对象、业务流程、数据输入输出、上下游关系和异常处置。"
+                        ),
+                        "",
+                        "**能力设计约束**",
+                        "",
+                        *markdown_table(
+                            ["约束维度", "设计与核验要求"],
+                            [
+                                ["启用前提", "、".join(prerequisites) or "结合现状、业务流程和既有授权确认"],
+                                ["接口依赖", "、".join(interface_dependencies) or "明确上下游、数据项、时点、异常和责任边界"],
+                                ["不包含事项", "、".join(exclusions) or "不得由标准能力自动扩展客户采购范围"],
+                                ["适用版本", "、".join(versions) or "结合现有版本与目标版本完成兼容性核验"],
+                                ["验收依据", "需求基线、配置记录、接口或数据样例、测试报告和问题关闭记录"],
+                            ],
+                        ),
+                        "",
+                    ]
+                )
         elif node["node_kind"] == "feature":
             block = blocks_by_id.get(node["source_object_id"], {})
             source_text = sanitize_standard_text(
@@ -1193,26 +1241,39 @@ def construction_section(
             current_feature = node["title"]
             current_profile = feature_control_profile(current_feature, source_text)
             feature_description = source_text or "本功能围绕业务受理、过程处理、结果回写和异常处置形成闭环。"
-            lines.extend(
-                [
-                    (
-                        f"{current_feature}用于承载{current_scope}中与{current_capability}相关的业务。{feature_description}"
-                        "实际启用范围应结合医院流程、岗位权限、主数据和既有系统接口进行参数化设计。"
-                    ),
-                    "",
-                    (
-                        f"{current_scope}中的{current_feature}实施时应{current_profile[0]}。"
-                        f"围绕{current_capability}验收时应{current_profile[1]}，"
-                        "并以经确认的需求规格、配置记录、接口或数据样例、测试报告和问题关闭记录作为证据。"
-                    ),
-                    "",
-                ]
-            )
+            if node.get("usage_mode") == "structure_only":
+                candidate_text = truncate_sentence(feature_description, 380)
+                lines.extend(
+                    [
+                        (
+                            f"【待确认】{current_feature}来自公司受审标准语料的候选结构，当前块仅供工作稿评审。"
+                            f"候选说明为：{candidate_text}复核时应确认其是否属于{current_scope}，并核对岗位流程、"
+                            f"主数据、接口和权限前提；如采用，实施应{current_profile[0]}，验收应{current_profile[1]}。"
+                        ),
+                        "",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        (
+                            f"{current_feature}用于承载{current_scope}中与{current_capability}相关的业务。{feature_description}"
+                            "实际启用范围应结合医院流程、岗位权限、主数据和既有系统接口进行参数化设计。"
+                        ),
+                        "",
+                        (
+                            f"实施时应{current_profile[0]}；验收时应{current_profile[1]}，并以需求规格、配置记录、"
+                            "接口或数据样例、测试报告和问题关闭记录作为证据。"
+                        ),
+                        "",
+                    ]
+                )
         else:
+            prefix = "【待确认】候选子节点" if node.get("usage_mode") == "structure_only" else "具体业务节点"
             lines.extend(
                 [
                     (
-                        f"{node['title']}是{current_feature}中的具体业务节点。设计时应{current_profile[0]}，"
+                        f"{node['title']}是{current_feature}中的{prefix}。设计时应{current_profile[0]}，"
                         f"并保持其处理结果与{current_capability}及{current_scope}的上下游状态一致；"
                         "涉及人工确认或专业判断的环节，应保留操作人、时间、依据和处理结果。"
                     ),
@@ -1233,11 +1294,17 @@ def generic_section(
         plan["chapter_code"],
         ROLE_ARGUMENT_OUTLINES.get(role, ["资料边界", "实施机制", "验收取证"]),
     )
-    lines = [
-        CHAPTER_INTROS.get(
+    intro = CHAPTER_INTROS.get(
             plan["chapter_code"],
             f"{plan['section_title']}围绕客户建设清单、项目材料和可核验依据展开，未由材料明确的现状、金额、工期和目标值保持待确认。",
-        ),
+        )
+    if plan["chapter_code"] == "1.1.2" and not project.get("approved_shared_block_count"):
+        intro = (
+            "本项目建设范围以客户清单为最高边界，围绕临床应用、患者服务、平台数据和实施支撑四类任务组织论证。"
+            "当前未读取到通过门禁的公司标准知识，后续功能深化必须在完成知识同步或导入受审离线包后进行。"
+        )
+    lines = [
+        intro,
         "",
     ]
     if required_tables:
@@ -1297,7 +1364,64 @@ def ensure_minimum_length(
         "basis": "依据文件、适用边界、核验状态与正文引用资格的分离",
     }
     focus = role_focus.get(plan.get("section_role", ""), "章节结论与已登记证据的对应关系")
-    supplements = [
+    construction_supplements = [
+        (
+            f"{plan['section_title']}应将每个客户范围项继续分解为业务场景、用户角色、功能能力、数据对象和验收证据，"
+            "并为各级对象维护稳定编号。需求、配置、开发、接口、测试和培训不能各自使用不同粒度的名称；"
+            "若标准能力比客户清单更细，只作为范围内的深化选项，不单独形成采购扩项。"
+        ),
+        (
+            "功能设计应围绕真实岗位和业务事件展开，至少说明发起、受理、处理、复核、退回或撤销、结果通知和异常恢复。"
+            "系统自动校验、人工专业判断和管理审批的责任应分开表述，重复提交、并发处理、跨科室协同和中断续办等场景"
+            "需在原型或需求规格中给出处理原则。"
+        ),
+        (
+            "数据与接口方面应形成业务对象、唯一标识、主数据来源、输入输出字段、交换方向、触发时点和保存期限清单。"
+            "外部系统交互需约定编码映射、消息幂等、失败重试、补偿对账、超时告警和责任分界，通过样例报文、数据集及联调日志"
+            "验证关联关系；未经参与方确认的接口数量和改造责任保留为待确认边界。"
+        ),
+        (
+            "升级或替换类建设应在正式切换前完成环境准备、历史数据盘点、清洗映射、试迁移、差异核对、接口联调、用户验证和切换演练。"
+            "上线窗口、增量追平、失败回退和业务补偿应具有进入条件、决策人和恢复目标，试运行阶段的人工处置不能在无时限、无责任人的情况下"
+            "演变为长期正式流程。"
+        ),
+        (
+            "建设内容验收应覆盖功能完整性、核心流程闭环、数据准确性、接口稳定性、权限与日志、异常恢复、培训交接和试运行问题关闭。"
+            "每个测试用例应关联需求编号、环境、前置数据、操作步骤、预期与实际结果及缺陷单，并核对交付物完整性、遗留问题和运行稳定性，"
+            "不以一次演示通过替代正式验收证据。"
+        ),
+        (
+            "性能与容量设计应以业务高峰、并发用户、数据增长、批处理窗口和接口吞吐的实测基线为依据，分别定义响应、吞吐、资源利用率和超时边界。"
+            "对核心链路开展单交易、混合负载、长稳和故障恢复测试，记录环境配置、数据规模、监控曲线和瓶颈处置；没有基线时只提出测量方法，不预设指标值。"
+        ),
+        (
+            "安全与隐私设计应从账号、角色、组织、数据分类分级和业务场景出发，落实身份鉴别、最小权限、敏感操作复核、传输存储保护、日志审计和备份恢复。"
+            "涉及患者信息共享、移动访问、批量导出或第三方运维时，应明确授权依据、访问边界、留痕要求和事件处置责任，并通过越权、弱口令、日志完整性及恢复演练验证。"
+        ),
+        (
+            "开发、测试、培训和生产环境应保持配置项可识别、版本可追踪且数据使用边界清晰。参数、规则、字典、流程、接口和报表变更需登记申请、影响分析、评审、验证、发布和回退记录，"
+            "禁止未经验证直接在生产环境修改；紧急变更完成后仍应补齐审批、测试和复盘证据。"
+        ),
+        (
+            "运行保障应为关键服务定义监控对象、告警阈值确定方法、分级响应、升级路径和恢复验证。应用、数据库、中间件、接口任务和基础资源的监控事件应关联工单，"
+            "区分业务规则错误、数据质量问题、外部依赖故障和平台资源异常，并通过月度分析推动知识库、配置基线和应急预案持续更新。"
+        ),
+        (
+            "培训与上线准备不能只以签到作为完成证据。应按管理人员、业务操作人员、系统管理员、运维人员和接口协同方设计差异化培训，结合真实场景开展操作与异常处置考核；"
+            "上线前确认账号权限、基础数据、用户手册、值守安排和问题受理渠道，试运行期统计使用、故障、退回和人工补偿情况并关闭影响业务的问题。"
+        ),
+        (
+            "建设项的完成状态应由追踪矩阵驱动，而不是由正文篇幅判断。矩阵至少关联范围 ID、能力或语料块 ID、需求编号、设计对象、配置或开发项、接口与数据对象、测试用例、缺陷单和验收材料，"
+            "并标识责任人、版本和确认状态。候选映射被调整或排除时，应同步更新目录、章节、投资归集和验收关系，防止残留内容继续进入后续版本。"
+        ),
+        (
+            "对于标准方案中出现但客户材料尚未明确的细分功能，项目组应在能力映射表中分别标记建议采用、条件采用、不适用或待确认，"
+            "记录判定依据、影响的流程与接口、所需资源和验收方式。仅当客户范围、现状条件和责任主体均已确认时，才能将其转化为确定的建设要求；"
+            "否则只能作为深化设计问题，并在投资、进度和绩效章节中保持同样的待确认状态。"
+            "评审时应同步检查该判定是否已进入范围基线、章节任务包和问题清单，避免只修改正文而失去追溯关系。"
+        ),
+    ] if plan.get("section_role") == "construction_content" else []
+    supplements = construction_supplements + [
         (
             f"为保证《{project['official_name']}》{plan['section_title']}与后续设计、采购、实施和验收口径一致，"
             f"本节重点控制{focus}。当前可直接承载的建设对象以{scope_summary}等已登记条目为准；"
@@ -1397,6 +1521,15 @@ def build_initial_drafts(
             row["block_id"]: dict(row)
             for row in connection.execute("SELECT * FROM corpus_block")
         }
+        project["approved_shared_block_count"] = connection.execute(
+            """
+            SELECT COUNT(*) FROM corpus_block b
+            JOIN corpus_document d ON d.corpus_document_id=b.corpus_document_id
+            JOIN source_document s ON s.source_id=d.source_id
+            WHERE b.review_status='approved' AND d.review_status='approved'
+              AND s.source_scope='shared'
+            """
+        ).fetchone()[0]
         nodes_by_plan: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in connection.execute(
             """
@@ -1471,6 +1604,8 @@ def build_initial_drafts(
                 "blocking_count": validation["blocking_count"],
                 "warning_count": validation["warning_count"],
                 "adopted": bool(adoption),
+                "adoption_scope": "working_draft_only" if adoption else "not_adopted",
+                "formal_delivery_eligible": False,
             }
         )
     return {
@@ -1480,6 +1615,12 @@ def build_initial_drafts(
         "generator": "evidence-bound-foundation-v2",
         "section_count": len(results),
         "adopted_count": sum(item["adopted"] for item in results),
+        "working_draft_adopted_count": sum(item["adopted"] for item in results),
+        "formal_delivery_adopted_count": 0,
+        "adoption_notice": (
+            "Adopted means selected for deterministic working-report assembly only; "
+            "it does not mean confirmed, approved, or eligible for formal delivery."
+        ),
         "failed_count": sum(item["validation_status"] != "passed" for item in results),
         "total_visible_length": sum(item["visible_length"] for item in results),
         "sections": results,

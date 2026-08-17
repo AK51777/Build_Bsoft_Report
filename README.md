@@ -10,11 +10,11 @@
 - 未确认内容保留 `【待确认】` 或 `【待补充】`，不由模型补写；
 - 章节只能使用组合计划绑定的来源；
 - 重复初始化、重复导入和重复运行保持幂等；
-- PostgreSQL 和 RAG 都不是核心流程的前置条件。
+- 正文不依赖 PostgreSQL 持续在线，但 `server_required` 必须先完成发布知识诊断与项目快照同步；离线运行必须显式选择已验证快照或受审知识包。
 
 ## 2. 当前完成状态
 
-当前版本为 **V3 可核验版**：在本地 SQLite 主链和公司标准知识包基础上，增加共享 PostgreSQL 发布库、项目快照、部门政策目录/正式政策证据分层、政策与标准分组组装、建设内容四至七级动态层级、证据约束初稿、真人基准评分、重复率门禁、真实 Word 标题和目录更新。
+当前版本为 **V3 可核验版（本地知识运行时增强）**：在本地 SQLite 主链和公司标准知识包基础上，增加用户级 PostgreSQL profile、只读诊断、确定性知识包/政策目录选择、项目快照完整性门禁、部门政策目录/正式政策证据分层、建设内容四至七级动态层级、建设清单—公司能力—标准语料闭环、证据约束完整工作稿、真人基准评分、重复率门禁、真实 Word 标题和目录更新。
 
 脱敏回归项目 V2.9 工作稿已达到自动基准 100 分：正文可见字符 237,625 个、1,367 个实质段落、727 个标题、25 个表格，Markdown、模板和占位符残留为 0，精确段落重复率 1.17%，模板骨架重复率 1.39%。487 页基准文档已完成全页渲染、自动页面审计和哈希绑定复核，3 页真实目录及跨页表头另行高分辨率检查；未发现空白页、横向异常、表格越界或文字截断。该结果证明生成链和版式链可运行，不代表项目缺失的投资、指标、医院现状或政策确认已经自动补齐。
 
@@ -70,25 +70,35 @@ $build-medical-it-feasibility-report
 
 ### 3.1 一条命令建立并推进项目
 
+首次使用时，将 `assets/knowledge-base/medical-report-kb.example.json` 复制到 `%USERPROFILE%/.codex/config/medical-report-kb.json`，配置只读账户并在启动工具的进程环境中设置 profile 指定的密码环境变量。不要在 JSON、项目配置或 Git 中保存密码。先执行 `python scripts/knowledge_doctor.py --profile default --json`。
+
+只读账户必须仅能读取已发布运行时视图和 migration 台账，不能直读草稿/审核表，也不能拥有写权限。管理员建账、收权和验证步骤见 `references/knowledge-connection-rules.md` 的“运行时只读账户”。
+
+仓库提供 `scripts/provision_postgres_runtime_reader.py`：默认只输出连接无关的 dry-run 计划；必须同时指定 `--apply` 和精确匹配的 `--confirm-database` 才会修改角色。它拒绝改造管理员/owner、带继承关系或拥有数据库对象的角色，并在提交前验证发布视图 SELECT 和全部基础表无写权限。
+
 ```powershell
 python scripts/run_project_pipeline.py <项目目录> `
   --project-code <项目编号> `
   --official-name <正式项目名称> `
   --owner-name <建设单位> `
-  --standard-knowledge-pack <本地受审知识包.json> `
+  --knowledge-profile default `
   --word-template <已确认格式模板.docx> `
   --output <项目目录>/运行记录/pipeline-result.json
 ```
 
+使用 `--output` 时，完整结果写入指定文件，控制台仅打印稳定摘要，避免数百个 block ID 淹没终端；确需调试完整 stdout 时再增加 `--print-full-result`。
+
+无服务器的本地受审包运行必须显式增加 `--knowledge-mode offline_pack --standard-knowledge-pack <本地受审知识包.json>`；只使用已有项目快照时选择 `snapshot_required`。`server_required` 失败不会自动降级。
+
 第一次运行会创建标准工作台。把材料放入 `<项目目录>/原始资料` 后再次运行同一命令，系统会：
 
-1. 初始化或复用项目工作台；
+1. 初始化或复用项目工作台，解析用户级知识 profile，完成诊断、同步与快照校验；
 2. 建立来源角色登记表，隔离项目材料、参考材料、厂商材料、政策线索和 Word 模板；
 3. 清洗 DOCX、Markdown、TXT 并写入本地语料库，项目材料才进入候选事实池；
 4. 提取项目材料中的 XLSX 建设清单并写入范围表；
 5. 生成政策、文档标准、候选事实、范围基线、参考复用地图和贯通矩阵；
-6. 生成 28 条可审计章节计划，按客户范围排除不适用建设类别，并导出适用章节任务包；
-7. 执行阶段门禁、工作稿校验和 Markdown 组装；
+6. 依据客户建设清单映射公司能力和标准 block IDs，动态展开四至七级建设目录并导出适用章节任务包；
+7. 生成证据约束完整工作稿，执行章节篇幅/事实/范围门禁、工作稿校验和 Markdown 组装；
 8. 在章节逐项校验并采纳、交付校验通过且已提供确认模板后生成 Word 候选稿；
 9. 校验当前 DOCX 是否已有逐页渲染复核记录；
 10. 输出十阶段状态、阻断项、下一步和复盘沉淀候选。
@@ -130,7 +140,7 @@ python scripts/build_standard_knowledge_pack.py <公司标准方案.docx> <公�
   --output <仓库外目录>/智慧医院标准知识包.json
 ```
 
-历史方案中的政策段默认禁止作为现行政策证据。流水线只为已存在的客户范围生成能力映射候选；人工运行 `apply_scope_capability_decisions.py` 确认后，建设章节才会召回对应标准正文。公司能力永远不能创建新的客户范围项。
+历史方案中的政策段默认禁止作为现行政策证据。流水线只为已存在的客户范围生成能力映射候选；未确认候选可按实际选中的 block ID 生成带 `【待确认】` 的 `working_only/structure_only` 评审工作稿，但不能据此扩大范围、形成确定配置或进入正式交付。人工运行 `apply_scope_capability_decisions.py` 确认后，对应语料才可按 `parameterized` 使用。公司能力永远不能创建新的客户范围项。
 
 ### 3.4 共享 PostgreSQL 与项目快照
 
@@ -329,6 +339,7 @@ flowchart TD
 | `import_policy_catalog_postgres.py` | 导入部门政策候选目录；目录项不自动成为正式政策证据。 |
 | `import_verified_policies_postgres.py` | 导入完成官方核验的政策文件、条款、主题和核验记录。 |
 | `query_postgres_knowledge.py` | 对发布视图进行有数量上限的只读查询。 |
+| `provision_postgres_runtime_reader.py` | 默认 dry-run；经管理员明确批准后，创建或收紧仅可读取 migration 台账和发布运行视图的专用账号，并验证无基础表写权限。 |
 | `sync_postgres_knowledge_snapshot.py` | 把服务器已发布知识同步到项目 SQLite，并保存项目级不可变快照。 |
 | `apply_scope_capability_decisions.py` | 追加式记录人工范围—能力映射决定。 |
 | `build_candidate_fact_workpack.py` | 输出可追溯文本和候选事实字段，不自动把段落认定为事实。 |

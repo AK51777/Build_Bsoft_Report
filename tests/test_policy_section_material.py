@@ -19,6 +19,32 @@ from match_project_policies import match  # noqa: E402
 
 
 class PolicySectionMaterialTests(unittest.TestCase):
+    def test_empty_policy_material_is_not_delivery_eligible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            initialized = initialize_project(
+                Path(tmp) / "project",
+                project_code="POLICY-MATERIAL-EMPTY",
+                official_name="空政策材料测试项目",
+            )
+            database = Path(initialized["database"])
+            seed = json.loads(
+                (
+                    SKILL_ROOT
+                    / "assets"
+                    / "knowledge-base"
+                    / "seeds"
+                    / "core_policy_seed_20260804.json"
+                ).read_text(encoding="utf-8")
+            )
+            ingest(database, seed)
+            match(database, "POLICY-MATERIAL-EMPTY", {"不存在的主题"}, None, None)
+
+            material = build_material(database, "POLICY-MATERIAL-EMPTY", mode="working")
+
+            self.assertFalse(material["basis_entries"])
+            self.assertFalse(material["background_paragraphs"])
+            self.assertFalse(material["delivery_eligible"])
+
     def test_working_material_is_traceable_and_delivery_requires_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
