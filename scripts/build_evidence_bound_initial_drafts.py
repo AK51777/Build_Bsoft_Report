@@ -543,6 +543,42 @@ def sanitize_standard_text(text: str, forbidden_terms: list[str], title: str) ->
     return truncate_sentence("".join(fragments[:5]), 420)
 
 
+def sanitize_confirmed_standard_text(
+    text: str,
+    forbidden_terms: list[str],
+    title: str,
+) -> str:
+    """Preserve every approved sentence for a confirmed capability assembly.
+
+    Confirmed standard blocks have already passed corpus review.  At this stage we
+    may normalise project voice and remove explicitly forbidden vendor terms, but
+    must not rank, summarise, drop, or truncate their approved content.
+    """
+    value = text.replace("\r\n", "\n").replace("\r", "\n")
+    for term in [*forbidden_terms, "BsoftGPT", "Bsoft", "创业慧康", "创业的产品资源"]:
+        if term:
+            value = value.replace(term, "")
+    replacements = {
+        "本院": "医院",
+        "我院": "医院",
+        "国家卫生部": "国家卫生健康主管部门",
+        "卫生部": "卫生健康主管部门",
+        "已经实现": "拟实现",
+        "已实现": "拟实现",
+        "实现了": "拟实现",
+        "达到了": "拟达到",
+    }
+    for source, target in replacements.items():
+        value = value.replace(source, target)
+    paragraphs = []
+    for raw in re.split(r"\n+", value):
+        paragraph = re.sub(r"[ \t]+", " ", raw).strip(" -—；;,，")
+        if not paragraph or compact(paragraph) == compact(title):
+            continue
+        paragraphs.append(paragraph.replace(",", "，").replace(";", "；"))
+    return "\n\n".join(paragraphs)
+
+
 def markdown_table(headers: list[str], rows: list[list[Any]]) -> list[str]:
     def cell(value: Any) -> str:
         return str(value if value not in (None, "") else "待确认").replace("|", "／").replace("\n", " ")
@@ -947,7 +983,21 @@ def policy_section(
             "政策适用性应结合发布层级、适用对象、有效状态和项目任务逐项判断。项目组需建立“文件—条款—建设范围—报告章节—责任部门—落实证据”对应关系，由项目负责人确认采用状态，业务、信息、安全和运营管理部门分别确认本领域的承接方式；尚未取得地方配套要求或医院正式决策的事项，只能列为待核实条件。",
             "政策要求应继续传递到立项、采购、设计、实施和绩效评价各环节。采购需求不得超出已经确认的建设边界，设计成果应说明具体承接机制，实施阶段保留评审和变更记录，验收阶段核对任务完成情况与证据。文件废止、修订或上位要求发生变化时，应重新评估必要性论证、建设内容、投资安排和绩效目标，避免不同章节沿用不一致版本。",
         ]
-    lines = [intro, "", *sum(([paragraph, ""] for paragraph in section_method), []), f"**{table_title}**", ""]
+    aspects = CHAPTER_ARGUMENT_OUTLINES[plan["chapter_code"]]
+    lines = [
+        f"#### {plan['chapter_code']}.1 {aspects[0]}",
+        "",
+        intro,
+        "",
+        section_method[0],
+        "",
+        section_method[1],
+        "",
+        f"#### {plan['chapter_code']}.2 {aspects[1]}",
+        "",
+        f"**{table_title}**",
+        "",
+    ]
     rows = []
     for item in basis_entries:
         rows.append(
@@ -993,6 +1043,14 @@ def policy_section(
             )
         )
         lines.append("")
+    lines.extend(
+        [
+            f"#### {plan['chapter_code']}.3 {aspects[2]}",
+            "",
+            section_method[2],
+            "",
+        ]
+    )
     for index, item in enumerate(paragraphs, start=1):
         topics = set(item.get("topic_tags") or [])
         title = item.get("title", "")
@@ -1028,22 +1086,20 @@ def policy_section(
             )
         lines.extend(
             [
-                f"#### {plan['chapter_code']}.{index} 《{item['title']}》的适用关系",
+                f"##### {plan['chapter_code']}.3.{index} 《{item['title']}》的适用关系",
                 "",
                 item["text"],
                 "",
                 application,
                 "",
-                (
-                    f"引用《{item['title']}》时，应保留文件名称、文号、发布单位、适用条款和核验记录，"
-                    "并在建设方案与验收材料中使用同一条款口径。正式报审前还需复核文件有效性和项目采用状态，"
-                    "不得把指导、鼓励或评价性内容改写为项目已经完成的事实。"
-                ),
-                "",
             ]
         )
     lines.extend(
         [
+            f"#### {plan['chapter_code']}.4 {aspects[3]}",
+            "",
+            section_method[3],
+            "",
             (
                 "上述依据在正文中的使用应形成闭环：政策文件用于说明建设方向和必要性，标准规范用于约束架构、"
                 "数据和功能设计，评价文件用于确定取证边界和检查方法。后续新增或替换依据时，应同步检查项目目标、"
@@ -1152,6 +1208,7 @@ def construction_section(
     current_feature = "相关功能"
     current_profile = feature_control_profile(current_feature, "")
     for node in nodes:
+        metadata = node.get("metadata") or json.loads(node.get("metadata_json") or "{}")
         marker = "#" * int(node["heading_level"])
         lines.extend([f"{marker} {node['chapter_code']} {node['title']}", ""])
         if node["node_kind"] == "scope":
@@ -1232,12 +1289,25 @@ def construction_section(
                     ]
                 )
         elif node["node_kind"] == "feature":
-            block = blocks_by_id.get(node["source_object_id"], {})
-            source_text = sanitize_standard_text(
-                block.get("clean_text", ""),
-                json_list(block.get("forbidden_terms_json")),
-                node["title"],
-            )
+            if metadata.get("content_mode") == "heading_only":
+                continue
+            block_ids = metadata.get("block_ids") or [node["source_object_id"]]
+            source_parts = []
+            for block_id in block_ids:
+                block = blocks_by_id.get(block_id, {})
+                sanitizer = (
+                    sanitize_confirmed_standard_text
+                    if metadata.get("block_selection_mode") == "full_confirmed_capability"
+                    else sanitize_standard_text
+                )
+                cleaned = sanitizer(
+                    block.get("clean_text", ""),
+                    json_list(block.get("forbidden_terms_json")),
+                    node["title"],
+                )
+                if cleaned:
+                    source_parts.append(cleaned)
+            source_text = "\n\n".join(source_parts)
             current_feature = node["title"]
             current_profile = feature_control_profile(current_feature, source_text)
             feature_description = source_text or "本功能围绕业务受理、过程处理、结果回写和异常处置形成闭环。"
@@ -1268,6 +1338,40 @@ def construction_section(
                         "",
                     ]
                 )
+        elif (
+            node["node_kind"] == "subfeature"
+            and node["source_type"] == "corpus"
+            and metadata.get("block_selection_mode") == "full_confirmed_capability"
+        ):
+            block_ids = metadata.get("block_ids") or [node["source_object_id"]]
+            source_parts = []
+            for block_id in block_ids:
+                block = blocks_by_id.get(block_id, {})
+                cleaned = sanitize_confirmed_standard_text(
+                    block.get("clean_text", ""),
+                    json_list(block.get("forbidden_terms_json")),
+                    node["title"],
+                )
+                if cleaned:
+                    source_parts.append(cleaned)
+            source_text = "\n\n".join(source_parts)
+            current_feature = node["title"]
+            current_profile = feature_control_profile(current_feature, source_text)
+            lines.extend(
+                [
+                    (
+                        f"{current_feature}用于承载{current_scope}中与{current_capability}相关的业务。"
+                        f"{source_text or '本功能应结合需求基线进一步细化。'}"
+                        "实际启用范围应结合医院流程、岗位权限、主数据和既有系统接口进行参数化设计。"
+                    ),
+                    "",
+                    (
+                        f"实施时应{current_profile[0]}；验收时应{current_profile[1]}，并以需求规格、配置记录、"
+                        "接口或数据样例、测试报告和问题关闭记录作为证据。"
+                    ),
+                    "",
+                ]
+            )
         else:
             prefix = "【待确认】候选子节点" if node.get("usage_mode") == "structure_only" else "具体业务节点"
             lines.extend(
@@ -1539,7 +1643,9 @@ def build_initial_drafts(
             """,
             (project["project_id"],),
         ):
-            nodes_by_plan[row["plan_id"]].append(dict(row))
+            item = dict(row)
+            item["metadata"] = json.loads(item.get("metadata_json") or "{}")
+            nodes_by_plan[row["plan_id"]].append(item)
     policy_material = build_policy_material(database, project_code, mode="working")
     results = []
     for plan in plans:

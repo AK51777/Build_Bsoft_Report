@@ -347,6 +347,7 @@ flowchart TD
 | `build_scope_baseline.py` / `confirm_scope_baseline.py` | 形成追加式范围快照并记录幂等人工确认。 |
 | `build_traceability_matrix.py` | 持久化问题—需求—建设—投资—指标—效益链，缺项明确登记。 |
 | `build_section_composition_plan.py` | 写入章节蓝图，生成项目章节计划和来源权限。 |
+| `build_report_outline.py` / `confirm_report_outline.py` | 从当前章节计划和动态建设节点形成一至七级候选目录，记录来源签名并显式确认；来源变化后旧确认自动失效。 |
 | `export_section_task_packages.py` | 导出可脱离历史对话继续执行的 JSON/Markdown 章节任务包。 |
 | `build_dynamic_construction_outline.py` | 按范围—能力—语料生成建设内容四至七级动态层级。 |
 | `build_policy_section_material.py` | 从同一政策匹配运行生成政策依据、标准规范表和可追溯段落素材。 |
@@ -354,7 +355,7 @@ flowchart TD
 | `save_section_draft.py` | 保存章节草稿版本、输入输出哈希和模型调用日志。 |
 | `validate_section_draft.py` | 检查篇幅、论证段、范围承载、表格、数字证据和参考残留。 |
 | `manage_section_draft.py` | 采纳、废弃、恢复章节版本并写审计记录。 |
-| `assemble_report_markdown.py` | 只从已采纳版本组装交付稿；缺章时阻断交付模式。 |
+| `assemble_report_markdown.py` | 按当前确认版目录的标题、层级和顺序组装已采纳版本；目录未确认、已失效或缺章时阻断交付模式。 |
 | `validate_project_gates.py` | 检查事实、政策、格式和范围阶段门禁。 |
 | `validate_full_report.py` | 执行十类全文校验并写入 `validation_run`、`validation_issue`。 |
 | `build_report_docx.py` | 工作模式生成带标识稿；正式模式校验数据库、内容哈希、模板和授权后转换 Markdown 六级语义。 |

@@ -81,6 +81,62 @@ def ranked_blocks(
     return selected
 
 
+def ordered_reviewed_blocks(
+    block_ids: list[str], corpus_by_id: dict[str, Any]
+) -> list[Any]:
+    """Return every approved construction block in the capability's stored order."""
+    selected: list[Any] = []
+    seen: set[str] = set()
+    for block_id in block_ids:
+        if block_id in seen:
+            continue
+        seen.add(block_id)
+        block = corpus_by_id.get(block_id)
+        if block is None:
+            continue
+        if block["section_role"] != "construction_content":
+            continue
+        if block["review_status"] != "approved" or block["reuse_class"] == "D":
+            continue
+        selected.append(block)
+    return selected
+
+
+def semantic_block_path(block: Any, excluded: set[str]) -> tuple[str, ...]:
+    """Keep the last two meaningful source headings for report levels 6 and 7."""
+    heading_path = json.loads(block["heading_path_json"] or "[]")
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    generic = {
+        title_key(value)
+        for value in ("建设内容", "系统建设", "软件建设", "功能建设", "总体方案")
+    }
+    for raw in heading_path:
+        title = presentation_title(raw)
+        key = title_key(title)
+        if not key or key in excluded or key in generic or key in seen:
+            continue
+        cleaned.append(title)
+        seen.add(key)
+    if not cleaned:
+        return ("功能概述",)
+    return tuple(cleaned[-2:])
+
+
+def grouped_full_blocks(
+    blocks: list[Any], excluded: set[str]
+) -> list[tuple[tuple[str, ...], list[Any]]]:
+    """Group adjacent chunks from one source heading without losing source order."""
+    groups: list[tuple[tuple[str, ...], list[Any]]] = []
+    for block in blocks:
+        path = semantic_block_path(block, excluded)
+        if groups and groups[-1][0] == path:
+            groups[-1][1].append(block)
+        else:
+            groups.append((path, [block]))
+    return groups
+
+
 def build_outline_nodes(
     conn,
     *,
@@ -190,6 +246,21 @@ def build_outline_nodes(
             capability_title = presentation_title(
                 mapping["capability_name"] or mapping["product_name"]
             )
+            block_ids = json.loads(mapping["standard_block_ids_json"] or "[]")
+            reviewed_blocks = ordered_reviewed_blocks(block_ids, corpus_by_id)
+            block_match_scope = mapping["block_match_scope"] or "unspecified"
+            full_selection = (
+                mapping_direct and block_match_scope != "product_heading_fallback"
+            )
+            blocks = (
+                reviewed_blocks
+                if full_selection
+                else ranked_blocks(
+                    block_ids,
+                    corpus_by_id,
+                    f"{scope['standard_name']} {mapping['product_name']} {capability_title}",
+                )
+            )
             capability_node = add_node(
                 parent_node_id=scope_node,
                 code=capability_code,
@@ -198,10 +269,10 @@ def build_outline_nodes(
                 kind="capability",
                 source_type="capability",
                 source_object_id=mapping["capability_id"],
-                usage_mode="parameterized" if mapping_direct else "structure_only",
+                usage_mode="parameterized" if full_selection else "structure_only",
                 length_min=300,
                 length_max=900,
-                status="ready" if mapping_direct else "working_only",
+                status="ready" if full_selection else "working_only",
                 metadata={
                     "map_id": mapping["map_id"],
                     "map_status": mapping["status"],
@@ -209,19 +280,84 @@ def build_outline_nodes(
                     "product_name": mapping["product_name"],
                     "module_name": mapping["module_name"],
                     "selection_rules": json.loads(mapping["selection_rules_json"] or "[]"),
+                    "block_match_scope": block_match_scope,
+                    "block_selection_mode": (
+                        "full_confirmed_capability" if full_selection else "bounded_working_preview"
+                    ),
+                    "available_reviewed_block_count": len(reviewed_blocks),
+                    "selected_block_count": len(blocks),
+                    "selected_all_reviewed_blocks": full_selection and len(blocks) == len(reviewed_blocks),
                 },
-            )
-            block_ids = json.loads(mapping["standard_block_ids_json"] or "[]")
-            blocks = ranked_blocks(
-                block_ids,
-                corpus_by_id,
-                f"{scope['standard_name']} {mapping['product_name']} {capability_title}",
             )
             excluded = {
                 title_key(scope["standard_name"]),
                 title_key(mapping["product_name"]),
                 title_key(capability_title),
             }
+            if full_selection:
+                feature_index = 0
+                for semantic_path, grouped_blocks in grouped_full_blocks(blocks, excluded):
+                    block_id_list = [block["block_id"] for block in grouped_blocks]
+                    common_metadata = {
+                        "heading_paths": [
+                            json.loads(block["heading_path_json"] or "[]")
+                            for block in grouped_blocks
+                        ],
+                        "source_locations": [block["source_location"] for block in grouped_blocks],
+                        "reuse_classes": [block["reuse_class"] for block in grouped_blocks],
+                        "block_ids": block_id_list,
+                        "block_selection_mode": "full_confirmed_capability",
+                    }
+                    feature_index += 1
+                    feature_code = f"{capability_code}.{feature_index}"
+                    if len(semantic_path) == 1:
+                        add_node(
+                            parent_node_id=capability_node,
+                            code=feature_code,
+                            level=6,
+                            title=semantic_path[0],
+                            kind="feature",
+                            source_type="corpus",
+                            source_object_id=block_id_list[0],
+                            usage_mode="parameterized",
+                            length_min=180,
+                            length_max=max(750, sum(len(block["clean_text"]) for block in grouped_blocks)),
+                            status="ready",
+                            metadata=common_metadata,
+                        )
+                        continue
+                    group_node = add_node(
+                        parent_node_id=capability_node,
+                        code=feature_code,
+                        level=6,
+                        title=semantic_path[0],
+                        kind="feature",
+                        source_type="capability",
+                        source_object_id=mapping["capability_id"],
+                        usage_mode="parameterized",
+                        length_min=0,
+                        length_max=0,
+                        status="ready",
+                        metadata={
+                            "content_mode": "heading_only",
+                            "block_selection_mode": "full_confirmed_capability",
+                        },
+                    )
+                    add_node(
+                        parent_node_id=group_node,
+                        code=f"{feature_code}.1",
+                        level=7,
+                        title=semantic_path[1],
+                        kind="subfeature",
+                        source_type="corpus",
+                        source_object_id=block_id_list[0],
+                        usage_mode="parameterized",
+                        length_min=180,
+                        length_max=max(750, sum(len(block["clean_text"]) for block in grouped_blocks)),
+                        status="ready",
+                        metadata=common_metadata,
+                    )
+                continue
             subfeature_budget = 2
             for feature_index, block in enumerate(blocks, start=1):
                 heading_path = json.loads(block["heading_path_json"] or "[]")
@@ -239,14 +375,16 @@ def build_outline_nodes(
                     kind="feature",
                     source_type="corpus",
                     source_object_id=block["block_id"],
-                    usage_mode="parameterized" if mapping_direct else "structure_only",
+                    usage_mode="structure_only",
                     length_min=180,
                     length_max=750,
-                    status="ready" if mapping_direct else "working_only",
+                    status="working_only",
                     metadata={
                         "heading_path": heading_path,
                         "source_location": block["source_location"],
                         "reuse_class": block["reuse_class"],
+                        "block_ids": [block["block_id"]],
+                        "block_selection_mode": "bounded_working_preview",
                     },
                 )
                 subfeatures = (
@@ -267,7 +405,7 @@ def build_outline_nodes(
                         kind="subfeature",
                         source_type="corpus",
                         source_object_id=block["block_id"],
-                        usage_mode="parameterized" if mapping_direct else "structure_only",
+                        usage_mode="structure_only",
                         length_min=100,
                         length_max=420,
                         status="ready" if mapping_direct else "working_only",

@@ -19,7 +19,9 @@
 
 公司产品能力与公共通用语料逻辑隔离。只有与 `project_scope_item` 确认映射且属于本期客户范围的能力才能进入正文。
 
-公司标准方案和标准清单先由 `build_standard_knowledge_pack.py` 在仓库外构建受审知识包，再导入项目数据库。知识包不得进入公开仓库；政策类历史段落默认 `D/prohibited`。能力映射初始状态只能为 `candidate`：在客户建设清单已明确的前提下，可按 `standard_block_ids` 限量召回受审语料，仅生成标记为 `working_only/structure_only` 的可评审初稿，不得宣称映射已确认；必须由人工决定为 `confirmed` 后，对应语料才能以 `parameterized` 进入正式交付。无论何种状态，均禁止按章节角色全量灌入；任务包只能绑定动态目录实际选中的块 ID。
+公司标准方案和标准清单先由 `build_standard_knowledge_pack.py` 在仓库外构建受审知识包，再导入项目数据库。知识包不得进入公开仓库；政策类历史段落默认 `D/prohibited`。能力映射初始状态只能为 `candidate`：在客户建设清单已明确的前提下，可按 `standard_block_ids` 限量召回受审语料，仅生成标记为 `working_only/structure_only` 的可评审初稿，不得宣称映射已确认。
+
+人工将范围—能力映射确认为 `confirmed` 后，只有 `block_match_scope` 为能力或模块级精确匹配的能力，才能按 `standard_block_ids` 保存的原始顺序全量装配全部已审核标准块。全量装配只做禁用词和项目语态归一，不得再评分、取前若干块、压缩为摘要或截断字数。只匹配到产品总标题的 `product_heading_fallback` 仍为 `structure_only`，必须先复核块边界，不能把整套产品方案误装到单个能力。无论何种状态，均禁止脱离客户清单按章节角色全库灌入；任务包只能绑定动态目录实际选中的块 ID，并校验已确认能力的可用块数与装配块数相等。
 
 ## 4. 章节组合计划
 

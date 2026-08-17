@@ -117,6 +117,7 @@ class StandardKnowledgePackTests(unittest.TestCase):
                 item for item in plan_result["plans"] if item["chapter_code"] == "5.1.1"
             )
             self.assertNotIn("capability_mapping_review", construction["missing_source_types"])
+            self.assertIn("capability_block_scope_review", construction["missing_source_types"])
             self.assertGreaterEqual(construction["outline_node_count"], 3)
             self.assertEqual(construction["outline_heading_levels"]["4"], 1)
             self.assertEqual(construction["outline_heading_levels"]["5"], 1)
@@ -132,7 +133,7 @@ class StandardKnowledgePackTests(unittest.TestCase):
                     (plan_id,),
                 ).fetchall()
                 self.assertIn(("capability", "parameterized"), source_types)
-                self.assertIn(("corpus", "parameterized"), source_types)
+                self.assertIn(("corpus", "structure_only"), source_types)
                 planned_block_ids = {
                     row[0]
                     for row in conn.execute(

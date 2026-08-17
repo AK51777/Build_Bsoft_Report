@@ -237,6 +237,7 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
                     jsonb(capability.get("exclusions", [])),
                     jsonb(capability.get("applicable_versions", [])),
                     capability.get("source_location", ""),
+                    capability.get("block_match_scope", ""),
                 )
             )
             for priority, block_id in enumerate(referenced_blocks, 1):
@@ -248,8 +249,9 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
             INSERT INTO {schema}.product_capability (
               capability_id,package_id,product_code,product_name,capability_name,
               capability_description,category,module_name,selection_rules,prerequisites,
-              interface_dependencies,exclusions,applicable_versions,source_location,review_status
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'approved')
+              interface_dependencies,exclusions,applicable_versions,source_location,
+              block_match_scope,review_status
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'approved')
             ON CONFLICT (capability_id) DO UPDATE SET
               package_id=EXCLUDED.package_id,product_code=EXCLUDED.product_code,
               product_name=EXCLUDED.product_name,capability_name=EXCLUDED.capability_name,
@@ -258,7 +260,9 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
               prerequisites=EXCLUDED.prerequisites,
               interface_dependencies=EXCLUDED.interface_dependencies,
               exclusions=EXCLUDED.exclusions,applicable_versions=EXCLUDED.applicable_versions,
-              source_location=EXCLUDED.source_location,review_status=EXCLUDED.review_status,
+              source_location=EXCLUDED.source_location,
+              block_match_scope=EXCLUDED.block_match_scope,
+              review_status=EXCLUDED.review_status,
               updated_at=NOW()
             """,
             capability_rows,

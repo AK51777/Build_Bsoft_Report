@@ -10,35 +10,12 @@ from datetime import date
 from pathlib import Path
 
 from knowledge_db import apply_migrations, connect
-
-
-CHAPTER_TITLES = {
-    "1": "总论",
-    "2": "现状与需求分析",
-    "3": "建设必要性与可行性",
-    "4": "总体建设方案",
-    "5": "建设内容",
-    "6": "项目实施与运维",
-    "7": "投资估算与资金筹措",
-    "8": "效益与绩效评价",
-    "9": "风险分析",
-    "10": "研究结论与建议",
-}
-GROUP_TITLES = {
-    "1.1": "项目概况", "1.2": "编制依据",
-    "2.1": "建设单位与现状", "2.2": "问题与需求",
-    "3.1": "建设必要性", "3.2": "建设可行性",
-    "4.1": "建设原则与目标", "4.2": "总体架构",
-    "5.1": "应用、集成与数据建设", "5.2": "基础设施与安全建设",
-    "6.1": "项目实施", "6.2": "运行维护",
-    "7.1": "投资估算", "7.2": "资金筹措",
-    "8.1": "预期效益", "8.2": "绩效评价",
-    "9.1": "风险与对策", "10.1": "结论与建议",
-}
-
-
-def chapter_key(value: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in value.split("."))
+from report_outline import (
+    CHAPTER_TITLES,
+    GROUP_TITLES,
+    build_outline_candidate,
+    chapter_key,
+)
 
 
 def strip_duplicate_heading(content: str, title: str) -> str:
@@ -50,9 +27,52 @@ def strip_duplicate_heading(content: str, title: str) -> str:
     return "\n".join(lines).strip()
 
 
-def assemble(database: Path, project_code: str, mode: str = "working") -> dict:
+def rewrite_confirmed_subheadings(content: str, nodes: list[dict]) -> str:
+    value = content
+    for node in nodes:
+        level = int(node["heading_level"])
+        pattern = re.compile(
+            rf"^#{{{level}}}\s+{re.escape(node['node_code'])}(?:\s+.*)?$",
+            flags=re.MULTILINE,
+        )
+        value = pattern.sub(
+            f"{'#' * level} {node['node_code']} {node['title']}",
+            value,
+            count=1,
+        )
+    return value
+
+
+def numbered_subheadings(content: str) -> set[tuple[int, str]]:
+    return {
+        (len(match.group(1)), match.group(2))
+        for match in re.finditer(
+            r"^(#{4,7})\s+(\d+(?:\.\d+){3,6})(?:\s+.*)?$",
+            content,
+            flags=re.MULTILINE,
+        )
+    }
+
+
+def assemble(
+    database: Path,
+    project_code: str,
+    mode: str = "working",
+    *,
+    allow_candidate_outline: bool = False,
+) -> dict:
     if mode not in {"working", "delivery"}:
         raise ValueError("mode must be working or delivery")
+    if allow_candidate_outline and mode != "working":
+        raise ValueError("candidate outlines may only be previewed in working mode")
+    outline = build_outline_candidate(database, project_code)
+    if outline["status"] != "confirmed" and not allow_candidate_outline:
+        raise RuntimeError(
+            "report assembly blocked; current outline is not confirmed. "
+            "Run confirm_report_outline.py after review."
+        )
+    section_nodes = [node for node in outline["nodes"] if node["node_kind"] == "section"]
+    section_plan_ids = [node["source_object_id"] for node in section_nodes]
     with connect(database.resolve()) as conn:
         apply_migrations(conn)
         project = conn.execute(
@@ -60,7 +80,7 @@ def assemble(database: Path, project_code: str, mode: str = "working") -> dict:
         ).fetchone()
         if project is None:
             raise RuntimeError(f"project_code {project_code} is not initialized")
-        plans = conn.execute(
+        active_plans = conn.execute(
             """
             SELECT * FROM section_composition_plan WHERE project_id=?
             AND applicability_status<>'not_applicable'
@@ -73,16 +93,70 @@ def assemble(database: Path, project_code: str, mode: str = "working") -> dict:
             """,
             (project["project_id"],),
         ).fetchall()
+        plan_by_id = {row["plan_id"]: row for row in active_plans}
+        unknown_plan_ids = [plan_id for plan_id in section_plan_ids if plan_id not in plan_by_id]
+        if unknown_plan_ids:
+            raise RuntimeError(
+                "confirmed outline references stale section plans: " + ", ".join(unknown_plan_ids)
+            )
+        plans = [plan_by_id[plan_id] for plan_id in section_plan_ids]
         adopted = {
             row["plan_id"]: row
             for row in conn.execute(
                 "SELECT * FROM draft_section_version WHERE status='adopted'"
             )
         }
-    plans = sorted(plans, key=lambda row: chapter_key(row["chapter_code"]))
     missing = [plan["chapter_code"] for plan in plans if plan["plan_id"] not in adopted]
     if mode == "delivery" and missing:
         raise RuntimeError(f"delivery assembly blocked; missing adopted sections: {', '.join(missing)}")
+    node_by_id = {node["report_outline_node_id"]: node for node in outline["nodes"]}
+    plan_for_node: dict[str, str] = {}
+    for node in outline["nodes"]:
+        current = node
+        while current and current["node_kind"] != "section":
+            current = node_by_id.get(current["parent_node_id"])
+        if current:
+            plan_for_node[node["report_outline_node_id"]] = current["source_object_id"]
+    descendants_by_plan: dict[str, list[dict]] = {}
+    missing_outline_nodes = []
+    for node in outline["nodes"]:
+        if int(node["heading_level"]) <= 3:
+            continue
+        plan_id = plan_for_node.get(node["report_outline_node_id"], "")
+        descendants_by_plan.setdefault(plan_id, []).append(node)
+        draft = adopted.get(plan_id)
+        if draft is None:
+            continue
+        expected_heading = re.compile(
+            rf"^#{{{int(node['heading_level'])}}}\s+{re.escape(node['node_code'])}(?:\s+.*)?$",
+            flags=re.MULTILINE,
+        )
+        if not expected_heading.search(draft["content"]):
+            missing_outline_nodes.append(
+                {"node_code": node["node_code"], "title": node["title"], "plan_id": plan_id}
+            )
+    unexpected_outline_nodes = []
+    for plan_id, draft in adopted.items():
+        if plan_id not in plan_by_id:
+            continue
+        expected = {
+            (int(node["heading_level"]), node["node_code"])
+            for node in descendants_by_plan.get(plan_id, [])
+        }
+        for level, code in sorted(numbered_subheadings(draft["content"]) - expected):
+            unexpected_outline_nodes.append(
+                {"node_code": code, "heading_level": level, "plan_id": plan_id}
+            )
+    if mode == "delivery" and missing_outline_nodes:
+        raise RuntimeError(
+            "delivery assembly blocked; adopted drafts do not carry the confirmed outline: "
+            + ", ".join(item["node_code"] for item in missing_outline_nodes[:12])
+        )
+    if mode == "delivery" and unexpected_outline_nodes:
+        raise RuntimeError(
+            "delivery assembly blocked; adopted drafts contain headings outside the confirmed outline: "
+            + ", ".join(item["node_code"] for item in unexpected_outline_nodes[:12])
+        )
     lines = [
         f"# {project['official_name']}",
         "",
@@ -100,25 +174,30 @@ def assemble(database: Path, project_code: str, mode: str = "working") -> dict:
                 "",
             ]
         )
-    current_chapter = ""
-    current_group = ""
-    for plan in plans:
-        parts = plan["chapter_code"].split(".")
-        chapter = parts[0]
-        group = ".".join(parts[:2])
-        if chapter != current_chapter:
-            lines.extend([f"# 第{chapter}章 {CHAPTER_TITLES.get(chapter, '')}", ""])
-            current_chapter = chapter
-            current_group = ""
-        if group != current_group:
-            lines.extend([f"## {group} {GROUP_TITLES.get(group, '')}", ""])
-            current_group = group
-        lines.extend([f"### {plan['chapter_code']} {plan['section_title']}", ""])
-        draft = adopted.get(plan["plan_id"])
-        if draft:
-            lines.extend([strip_duplicate_heading(draft["content"], plan["section_title"]), ""])
-        else:
-            lines.extend([f"【待补充：{plan['section_title']}尚无已采纳章节版本】", ""])
+        if outline["status"] != "confirmed":
+            lines.extend(
+                [
+                    "> 【目录候选预览】本工作稿使用尚未确认的目录候选；正式组装前必须冻结确认版目录。",
+                    "",
+                ]
+            )
+    for node in outline["nodes"]:
+        if node["node_kind"] == "chapter":
+            lines.extend([f"# 第{node['node_code']}章 {node['title']}", ""])
+        elif node["node_kind"] == "group":
+            lines.extend([f"## {node['node_code']} {node['title']}", ""])
+        elif node["node_kind"] == "section":
+            plan = plan_by_id[node["source_object_id"]]
+            lines.extend([f"### {node['node_code']} {node['title']}", ""])
+            draft = adopted.get(plan["plan_id"])
+            if draft:
+                body = strip_duplicate_heading(draft["content"], node["title"])
+                body = rewrite_confirmed_subheadings(
+                    body, descendants_by_plan.get(plan["plan_id"], [])
+                )
+                lines.extend([body, ""])
+            else:
+                lines.extend([f"【待补充：{node['title']}尚无已采纳章节版本】", ""])
     return {
         "project_code": project_code,
         "mode": mode,
@@ -126,6 +205,12 @@ def assemble(database: Path, project_code: str, mode: str = "working") -> dict:
         "section_count": len(plans),
         "adopted_section_count": len(plans) - len(missing),
         "missing_adopted_sections": missing,
+        "outline_version_id": outline["outline_version_id"],
+        "outline_status": outline["status"],
+        "outline_hash": outline["outline_hash"],
+        "outline_source_signature": outline["source_signature"],
+        "missing_confirmed_outline_nodes": missing_outline_nodes,
+        "unexpected_draft_outline_nodes": unexpected_outline_nodes,
     }
 
 
@@ -134,10 +219,20 @@ def main() -> int:
     parser.add_argument("database", type=Path)
     parser.add_argument("project_code")
     parser.add_argument("--mode", choices=("working", "delivery"), default="working")
+    parser.add_argument(
+        "--allow-candidate-outline",
+        action="store_true",
+        help="Preview the current unconfirmed outline in working mode only.",
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--summary", type=Path)
     args = parser.parse_args()
-    result = assemble(args.database, args.project_code, args.mode)
+    result = assemble(
+        args.database,
+        args.project_code,
+        args.mode,
+        allow_candidate_outline=args.allow_candidate_outline,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(result.pop("content"), encoding="utf-8")
     if args.summary:

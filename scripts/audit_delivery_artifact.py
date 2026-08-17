@@ -96,6 +96,8 @@ def audit(
 
     required_chars = max(0, minimum_body_chars)
     validation_run_id = ""
+    expected_outline_hash = ""
+    expected_outline_version_id = ""
     expected_outline_nodes: list[dict[str, Any]] = []
     if database and project_code:
         with connect(database.resolve()) as conn:
@@ -113,19 +115,31 @@ def audit(
                     """,
                     (project["project_id"],),
                 ).fetchone()[0]
-                expected_outline_nodes = [
-                    dict(row)
-                    for row in conn.execute(
-                        """
-                        SELECT n.heading_level,n.title,n.chapter_code
-                        FROM section_outline_node n
-                        JOIN section_composition_plan p ON p.plan_id=n.plan_id
-                        WHERE p.project_id=? AND p.applicability_status<>'not_applicable'
-                        ORDER BY p.chapter_code,n.ordinal
-                        """,
-                        (project["project_id"],),
-                    )
-                ]
+                active_candidate = conn.execute(
+                    "SELECT outline_version_id FROM report_outline_version WHERE project_id=? AND status='candidate'",
+                    (project["project_id"],),
+                ).fetchone()
+                confirmed_outline = conn.execute(
+                    "SELECT * FROM report_outline_version WHERE project_id=? AND status='confirmed'",
+                    (project["project_id"],),
+                ).fetchone()
+                if confirmed_outline is None or active_candidate is not None:
+                    add(blockers, "confirmed_outline_missing_or_stale", "数据库没有与当前章节计划绑定的确认版目录。")
+                else:
+                    expected_outline_hash = confirmed_outline["outline_hash"]
+                    expected_outline_version_id = confirmed_outline["outline_version_id"]
+                    expected_outline_nodes = [
+                        dict(row)
+                        for row in conn.execute(
+                            """
+                            SELECT heading_level,title,node_code AS chapter_code
+                            FROM report_outline_node
+                            WHERE outline_version_id=? AND heading_level BETWEEN 4 AND 7
+                            ORDER BY ordinal
+                            """,
+                            (expected_outline_version_id,),
+                        )
+                    ]
                 validation = conn.execute(
                     """
                     SELECT validation_run_id,status,blocking_count FROM validation_run
@@ -184,6 +198,10 @@ def audit(
             add(blockers, "delivery_authorization_missing", "构建摘要没有数据库交付校验授权。")
         if validation_run_id and authorization.get("validation_run_id") != validation_run_id:
             add(blockers, "delivery_authorization_stale", "构建摘要绑定的交付校验不是数据库最新通过记录。")
+        if expected_outline_version_id and authorization.get("outline_version_id") != expected_outline_version_id:
+            add(blockers, "outline_authorization_stale", "构建摘要绑定的目录版本不是数据库当前确认版。")
+        if expected_outline_hash and authorization.get("outline_hash") != expected_outline_hash:
+            add(blockers, "outline_hash_mismatch", "构建摘要中的目录哈希与数据库确认版不一致。")
         if summary.get("markdown_residue") != {
             "heading_markers": 0, "bold_markers": 0, "code_markers": 0
         }:

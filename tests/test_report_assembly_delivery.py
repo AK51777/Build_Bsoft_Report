@@ -22,6 +22,7 @@ from build_section_composition_plan import build_composition_plan  # noqa: E402
 from export_section_task_packages import export_packages  # noqa: E402
 from init_project_workbench import initialize_project  # noqa: E402
 from manage_section_draft import manage_draft  # noqa: E402
+from report_outline import confirm_outline  # noqa: E402
 from save_section_draft import save_draft  # noqa: E402
 from validate_full_report import validate_report  # noqa: E402
 from validate_section_draft import validate_draft  # noqa: E402
@@ -65,6 +66,9 @@ class ReportAssemblyDeliveryTests(unittest.TestCase):
             database = Path(initialized["database"])
             build_composition_plan(
                 database, "TEST-DELIVERY-001", blueprint_payload=BLUEPRINTS
+            )
+            confirm_outline(
+                database, "TEST-DELIVERY-001", confirmed_by="test-reviewer"
             )
             packages = root / "packages"
             export_packages(database, "TEST-DELIVERY-001", packages)
@@ -157,6 +161,9 @@ class ReportAssemblyDeliveryTests(unittest.TestCase):
             build_composition_plan(
                 database, "TEST-DELIVERY-BLOCK", blueprint_payload=BLUEPRINTS
             )
+            confirm_outline(
+                database, "TEST-DELIVERY-BLOCK", confirmed_by="test-reviewer"
+            )
             with self.assertRaises(RuntimeError):
                 assemble(database, "TEST-DELIVERY-BLOCK", "delivery")
 
@@ -170,6 +177,9 @@ class ReportAssemblyDeliveryTests(unittest.TestCase):
             database = Path(initialized["database"])
             build_composition_plan(
                 database, "TEST-DELIVERY-HASH", blueprint_payload=BLUEPRINTS
+            )
+            confirm_outline(
+                database, "TEST-DELIVERY-HASH", confirmed_by="test-reviewer"
             )
             packages = root / "packages"
             export_packages(database, "TEST-DELIVERY-HASH", packages)

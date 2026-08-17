@@ -321,6 +321,33 @@ def validate(database: Path, project_code: str) -> dict:
                 "message": "问题—需求—建设—投资—指标—效益链不得断裂；无依据关系必须登记为缺口。",
             }
         )
+        active_outline_candidate = conn.execute(
+            """
+            SELECT outline_version_id FROM report_outline_version
+            WHERE project_id=? AND status='candidate'
+            """,
+            (project_id,),
+        ).fetchone()
+        confirmed_outline = conn.execute(
+            """
+            SELECT outline_version_id FROM report_outline_version
+            WHERE project_id=? AND status='confirmed'
+            """,
+            (project_id,),
+        ).fetchone()
+        outline_current = confirmed_outline is not None and active_outline_candidate is None
+        checks.append(
+            {
+                "stage_code": "S4_TRACEABILITY",
+                "gate_code": "GATE-REPORT-OUTLINE-CONFIRMATION",
+                "result": "pass" if outline_current else "fail",
+                "blocking_count": 0 if outline_current else 1,
+                "message": (
+                    "目录候选必须显式确认并与当前章节计划、动态建设目录的来源签名绑定；"
+                    "存在新的候选版本时，旧确认版不得继续组装。"
+                ),
+            }
+        )
 
         checked_at = now_iso()
         for item in checks:

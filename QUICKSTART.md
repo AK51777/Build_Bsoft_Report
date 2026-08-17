@@ -98,10 +98,12 @@ python scripts/match_policy_catalog_candidates.py `
 6. `数据包/结构化数据/traceability-matrix.csv`：贯通矩阵及缺失链；
 7. `数据包/结构化数据/policy-selection.json`：政策候选；
 8. `数据包/结构化数据/document-standard-selection.json`：文档标准候选；
-9. `10-章节任务包`：逐章生成输入；
-10. `运行记录/stage-gates.json`：阶段门禁；
-11. `11-正文工作稿/report-working.md`：当前工作稿；
-12. `15-项目复盘.md`：十阶段状态和只允许沉淀的通用候选。
+9. `数据包/结构化数据/outline-candidate.json`、`outline-candidate.md`：当前一至七级候选目录；
+10. `09-确认版目录.md`：人工确认后才生成的组装权威目录；
+11. `10-章节任务包`：逐章生成输入；
+12. `运行记录/stage-gates.json`：阶段门禁；
+13. `11-正文工作稿/report-working.md`：当前工作稿；
+14. `15-项目复盘.md`：十阶段状态和只允许沉淀的通用候选。
 
 ## 5. 处理确认
 
@@ -109,6 +111,7 @@ python scripts/match_policy_catalog_candidates.py `
 - 政策候选必须由用户确认，AI 推荐不等于正式依据；
 - 建设范围项全部确认后，运行 `build_scope_baseline.py`，再运行 `confirm_scope_baseline.py`；
 - 公司标准知识包先生成能力映射候选；候选语料只允许以带 `【待确认】` 标记的 `working_only/structure_only` 进入评审工作稿，不代表范围或配置已经确认；填写并回写 `mapping-decisions.json` 后，才允许以 `parameterized` 进入正式交付；
+- 运行 `build_report_outline.py` 生成完整候选目录，审阅后用 `confirm_report_outline.py` 显式确认；计划、范围能力映射或动态节点改变后必须重新确认；
 - 部门政策目录只是候选线索；只有官方核验后的 `policy_document` / `policy_clause` 才允许作为正式依据；
 - 贯通关系写入 `数据包/结构化数据/traceability-links.json`，不要让模型猜测问题、投资、指标和效益之间的对应关系；
 - 重新运行统一入口，直到相关章节计划从 `blocked` 变为 `ready`。
@@ -130,6 +133,10 @@ python scripts/build_evidence_bound_initial_drafts.py `
 也可逐章生成后，用 `save_section_draft.py` 保存版本，先执行 `validate_section_draft.py`，通过后再以 `manage_section_draft.py ... adopt` 采纳。所有适用章节采纳后执行：
 
 ```powershell
+python scripts/build_report_outline.py <knowledge.sqlite> <项目编号> `
+  --output-json outline-candidate.json --output-md outline-candidate.md
+python scripts/confirm_report_outline.py <knowledge.sqlite> <项目编号> <目录版本ID> `
+  --confirmed-by <确认人> --output-json outline-confirmation.json
 python scripts/assemble_report_markdown.py <knowledge.sqlite> <项目编号> --mode delivery --output report.md
 python scripts/validate_full_report.py <knowledge.sqlite> <项目编号> --mode delivery --output validation.json
 python scripts/build_report_docx.py report.md report.docx `
