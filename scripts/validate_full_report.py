@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 from knowledge_db import apply_migrations, connect, dump_json, now_iso, sha256_text, stable_id
+from report_outline import build_outline_candidate
 from validate_section_draft import HIGH_RISK_NUMBER_PATTERN, EVIDENCE_MARKER_PATTERN, visible_length
 
 
@@ -26,6 +27,7 @@ def validate_report(
     if mode not in {"working", "delivery"}:
         raise ValueError("mode must be working or delivery")
     residual_terms = [term.strip() for term in (residual_terms or []) if term.strip()]
+    outline = build_outline_candidate(database, project_code)
     started_at = now_iso()
     issues: list[dict] = []
 
@@ -85,6 +87,72 @@ def validate_report(
         content_sha256 = sha256_text(
             json.dumps(adopted_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         )
+        if outline["status"] != "confirmed":
+            add(
+                "blocking" if mode == "delivery" else "high",
+                "outline_confirmation",
+                "report-outline",
+                "当前目录候选尚未确认，不能作为正式报告的组装依据。",
+                [outline["outline_version_id"]],
+                "审阅 outline-candidate.json 后运行 confirm_report_outline.py。",
+            )
+
+        outline_node_by_id = {
+            node["report_outline_node_id"]: node for node in outline["nodes"]
+        }
+        outline_plan_for_node: dict[str, str] = {}
+        for node in outline["nodes"]:
+            current = node
+            while current and current["node_kind"] != "section":
+                current = outline_node_by_id.get(current["parent_node_id"])
+            if current:
+                outline_plan_for_node[node["report_outline_node_id"]] = current[
+                    "source_object_id"
+                ]
+        expected_headings_by_plan: dict[str, set[tuple[int, str]]] = {}
+        for node in outline["nodes"]:
+            if int(node["heading_level"]) <= 3:
+                continue
+            plan_id = outline_plan_for_node.get(node["report_outline_node_id"], "")
+            expected_headings_by_plan.setdefault(plan_id, set()).add(
+                (int(node["heading_level"]), node["node_code"])
+            )
+            draft = adopted.get(plan_id)
+            if draft is None:
+                continue
+            expected_heading = re.compile(
+                rf"^#{{{int(node['heading_level'])}}}\s+{re.escape(node['node_code'])}(?:\s+.*)?$",
+                flags=re.MULTILINE,
+            )
+            if not expected_heading.search(draft["content"]):
+                add(
+                    "blocking" if mode == "delivery" else "high",
+                    "outline_coverage",
+                    node["node_code"],
+                    "已采纳正文未承载当前确认目录节点。",
+                    [node["report_outline_node_id"], plan_id],
+                    "按确认版目录重新生成并校验对应章节。",
+                )
+        for plan_id, draft in adopted.items():
+            actual = {
+                (len(match.group(1)), match.group(2))
+                for match in re.finditer(
+                    r"^(#{4,7})\s+(\d+(?:\.\d+){3,6})(?:\s+.*)?$",
+                    draft["content"],
+                    flags=re.MULTILINE,
+                )
+            }
+            for level, code in sorted(
+                actual - expected_headings_by_plan.get(plan_id, set())
+            ):
+                add(
+                    "blocking" if mode == "delivery" else "high",
+                    "outline_extraneous_heading",
+                    code,
+                    "已采纳正文存在确认目录之外的编号标题。",
+                    [plan_id],
+                    "按确认版目录重新生成或调整对应章节。",
+                )
 
         for plan in plans:
             if plan["plan_id"] not in adopted:
@@ -275,6 +343,9 @@ def validate_report(
                     "high_count": high_count,
                     "content_sha256": content_sha256,
                     "adopted_manifest": adopted_manifest,
+                    "outline_version_id": outline["outline_version_id"],
+                    "outline_hash": outline["outline_hash"],
+                    "outline_status": outline["status"],
                 }),
             ),
         )
@@ -310,6 +381,9 @@ def validate_report(
         "high_count": high_count,
         "content_sha256": content_sha256,
         "adopted_manifest": adopted_manifest,
+        "outline_version_id": outline["outline_version_id"],
+        "outline_hash": outline["outline_hash"],
+        "outline_status": outline["status"],
         "issues": issues,
     }
 

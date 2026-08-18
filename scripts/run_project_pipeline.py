@@ -57,6 +57,7 @@ from match_policy_catalog_candidates import match_candidates as match_policy_cat
 from match_policy_catalog_candidates import to_markdown as policy_catalog_markdown
 from postgres_knowledge_db import canonical_json
 from postgres_knowledge_db import connect as connect_postgres
+from report_outline import build_outline_candidate, write_outline_outputs
 from sync_postgres_knowledge_snapshot import KnowledgeSelectionError
 from sync_postgres_knowledge_snapshot import sync as sync_postgres_knowledge
 from validate_full_report import validate_report
@@ -255,9 +256,13 @@ def construction_knowledge_coverage(database: Path, project_code: str) -> dict:
             (project_id,),
         ).fetchone()[0]
         mapped_scope_ids = set()
+        confirmed_capability_ids: set[str] = set()
+        confirmed_available_block_ids: set[str] = set()
+        imprecise_confirmed_capability_ids: set[str] = set()
         for row in conn.execute(
             """
-            SELECT m.scope_id,c.standard_block_ids_json
+            SELECT m.scope_id,m.capability_id,m.status,c.standard_block_ids_json,
+                   c.block_match_scope
             FROM scope_product_map m
             JOIN product_capability c ON c.capability_id=m.capability_id
             WHERE m.project_id=? AND m.status IN ('candidate','confirmed')
@@ -266,6 +271,14 @@ def construction_knowledge_coverage(database: Path, project_code: str) -> dict:
         ):
             if json.loads(row["standard_block_ids_json"] or "[]"):
                 mapped_scope_ids.add(row["scope_id"])
+            if row["status"] == "confirmed":
+                confirmed_capability_ids.add(row["capability_id"])
+                if row["block_match_scope"] == "product_heading_fallback":
+                    imprecise_confirmed_capability_ids.add(row["capability_id"])
+                else:
+                    confirmed_available_block_ids.update(
+                        json.loads(row["standard_block_ids_json"] or "[]")
+                    )
         block_ids = [
             row[0]
             for row in conn.execute(
@@ -281,6 +294,21 @@ def construction_knowledge_coverage(database: Path, project_code: str) -> dict:
                 (project_id,),
             )
         ]
+        parameterized_block_ids = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT s.source_object_id
+                FROM section_plan_source s
+                JOIN section_composition_plan p ON p.plan_id=s.plan_id
+                JOIN section_blueprint b ON b.blueprint_id=p.blueprint_id
+                WHERE p.project_id=? AND b.section_role='construction_content'
+                  AND s.source_type='corpus' AND s.usage_mode='parameterized'
+                """,
+                (project_id,),
+            )
+        }
+        selected_confirmed_block_ids = confirmed_available_block_ids & parameterized_block_ids
     return {
         "scope_count": scope_count,
         "scope_node_count": scope_node_count,
@@ -291,6 +319,18 @@ def construction_knowledge_coverage(database: Path, project_code: str) -> dict:
         "mapping_coverage_ratio": round(len(mapped_scope_ids) / scope_count, 6) if scope_count else 1.0,
         "standard_block_count": len(block_ids),
         "block_ids": block_ids,
+        "confirmed_capability_count": len(confirmed_capability_ids),
+        "imprecise_confirmed_capability_count": len(imprecise_confirmed_capability_ids),
+        "confirmed_available_block_count": len(confirmed_available_block_ids),
+        "confirmed_selected_block_count": len(selected_confirmed_block_ids),
+        "full_block_coverage_ratio": (
+            round(len(selected_confirmed_block_ids) / len(confirmed_available_block_ids), 6)
+            if confirmed_available_block_ids
+            else 1.0
+        ),
+        "missing_confirmed_block_ids": sorted(
+            confirmed_available_block_ids - selected_confirmed_block_ids
+        ),
     }
 
 
@@ -882,6 +922,31 @@ def run_pipeline(
         )
     plan_result = build_composition_plan(database, project_code)
     write_json(structured_dir / "section-composition-plan.json", plan_result)
+    outline_result = build_outline_candidate(database, project_code)
+    write_outline_outputs(
+        outline_result,
+        json_path=structured_dir / "outline-candidate.json",
+        markdown_path=structured_dir / "outline-candidate.md",
+    )
+    if outline_result["status"] == "confirmed":
+        write_outline_outputs(
+            outline_result,
+            json_path=structured_dir / "outline-confirmed.json",
+            markdown_path=workbench / "09-确认版目录.md",
+        )
+    else:
+        blockers.append(
+            {
+                "stage": "S4_TRACEABILITY_OUTLINE",
+                "reason": "report_outline_not_confirmed",
+                "required_action": (
+                    "Review 数据包/结构化数据/outline-candidate.json, then run "
+                    "confirm_report_outline.py to freeze the current source signature."
+                ),
+                "outline_version_id": outline_result["outline_version_id"],
+                "source_signature": outline_result["source_signature"],
+            }
+        )
     construction_coverage = construction_knowledge_coverage(database, project_code)
     write_json(structured_dir / "construction-knowledge-coverage.json", construction_coverage)
     if construction_coverage["scope_count"] and construction_coverage["coverage_ratio"] < 1.0:
@@ -906,23 +971,29 @@ def run_pipeline(
                 "details": construction_coverage,
             }
         )
-    outline_lines = ["# 三级目录候选", "", "> 当前目录由章节蓝图生成；正式冻结前需用户确认。", ""]
-    current_chapter = ""
-    current_group = ""
-    for plan in sorted(plan_result["plans"], key=lambda item: chapter_key(item["chapter_code"])):
-        chapter, group, _ = plan["chapter_code"].split(".")
-        group_code = f"{chapter}.{group}"
-        if chapter != current_chapter:
-            outline_lines.extend([f"## 第{chapter}章 {CHAPTER_TITLES.get(chapter, '')}", ""])
-            current_chapter = chapter
-            current_group = ""
-        if group_code != current_group:
-            outline_lines.extend([f"### {group_code} {GROUP_TITLES.get(group_code, '')}", ""])
-            current_group = group_code
-        outline_lines.append(f"- {plan['chapter_code']} {plan['section_title']}（{plan['status']}）")
-    (structured_dir / "outline-candidate.md").write_text(
-        "\n".join(outline_lines) + "\n", encoding="utf-8"
-    )
+    if construction_coverage["imprecise_confirmed_capability_count"]:
+        blockers.append(
+            {
+                "stage": "S5_SECTION_PACKAGES",
+                "reason": "confirmed_capability_uses_product_level_block_fallback",
+                "required_action": (
+                    "Refine capability-to-standard-block relations to module/capability headings; "
+                    "product-level fallback remains a bounded working preview."
+                ),
+                "details": construction_coverage,
+            }
+        )
+    if construction_coverage["full_block_coverage_ratio"] < 1.0:
+        blockers.append(
+            {
+                "stage": "S5_SECTION_PACKAGES",
+                "reason": "confirmed_capability_standard_blocks_not_fully_carried",
+                "required_action": (
+                    "Carry every approved block bound to each confirmed capability in stored source order."
+                ),
+                "details": construction_coverage,
+            }
+        )
     package_result = export_packages(database, project_code, task_dir)
     draft_generation = {
         "status": "disabled",
@@ -951,7 +1022,12 @@ def run_pipeline(
         database, project_code, mode="working", residual_terms=residual_terms
     )
     write_json(logs_dir / "working-validation.json", report_validation)
-    assembly = assemble(database, project_code, mode="working")
+    assembly = assemble(
+        database,
+        project_code,
+        mode="working",
+        allow_candidate_outline=True,
+    )
     report_content = assembly.pop("content")
     draft_dir.mkdir(parents=True, exist_ok=True)
     (draft_dir / "report-working.md").write_text(report_content, encoding="utf-8")
@@ -1051,6 +1127,8 @@ def run_pipeline(
                     "template_sha256": sha256_file(selected_template) if selected_template else "",
                     "delivery_validation_run_id": delivery_validation["validation_run_id"],
                     "validated_content_sha256": delivery_validation["content_sha256"],
+                    "outline_version_id": delivery_assembly["outline_version_id"],
+                    "outline_hash": delivery_assembly["outline_hash"],
                     "delivery_gate_version": "2.0",
                 }
                 build_input_sha256 = sha256_text(
@@ -1183,11 +1261,14 @@ def run_pipeline(
                 if scope_baseline["status"] == "confirmed"
                 and traceability["incomplete_count"] == 0
                 and traceability["conflict_count"] == 0
+                and outline_result["status"] == "confirmed"
                 else "blocked"
             ),
             "artifacts": [
                 "数据包/结构化数据/traceability-matrix.csv",
+                "数据包/结构化数据/outline-candidate.json",
                 "数据包/结构化数据/outline-candidate.md",
+                "09-确认版目录.md",
             ],
         },
         {
@@ -1308,6 +1389,14 @@ def run_pipeline(
             "ready_count": plan_result["ready_count"],
             "blocked_count": plan_result["blocked_count"],
             "not_applicable_count": plan_result["not_applicable_count"],
+        },
+        "report_outline": {
+            "outline_version_id": outline_result["outline_version_id"],
+            "version_no": outline_result["version_no"],
+            "status": outline_result["status"],
+            "source_signature": outline_result["source_signature"],
+            "outline_hash": outline_result["outline_hash"],
+            "node_count": len(outline_result["nodes"]),
         },
         "construction_knowledge_coverage": construction_coverage,
         "task_packages": package_result["package_count"],

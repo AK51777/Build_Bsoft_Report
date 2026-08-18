@@ -135,6 +135,8 @@ MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/sync_postgres_knowledg
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/query_postgres_knowledge.py package --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output published-packages.json
 python scripts/apply_scope_capability_decisions.py <knowledge.sqlite> <mapping-decisions.json> --output mapping-apply-result.json
 python scripts/build_section_composition_plan.py <knowledge.sqlite> <project-code> --output section-composition-plan.json
+python scripts/build_report_outline.py <knowledge.sqlite> <project-code> --output-json outline-candidate.json --output-md outline-candidate.md
+python scripts/confirm_report_outline.py <knowledge.sqlite> <project-code> <outline-version-id> --confirmed-by <name> [--candidate-json outline-reviewed.json] --output-json outline-confirmation.json
 python scripts/export_section_task_packages.py <knowledge.sqlite> <project-code> <10-章节任务包> --output task-package-export.json
 python scripts/build_policy_section_material.py <knowledge.sqlite> <project-code> --mode working --output-json policy-section-material.json --output-md policy-section-material.md
 python scripts/build_evidence_bound_initial_drafts.py <knowledge.sqlite> <project-code> <10-章节任务包> <11-正文工作稿> --output evidence-bound-drafts.json

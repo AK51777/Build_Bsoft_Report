@@ -378,9 +378,13 @@ def authorize_delivery(
         content_sha256 = current_adopted_hash(conn, project["project_id"])
         if summary.get("content_sha256") != content_sha256:
             raise RuntimeError("formal delivery blocked: delivery validation is stale")
+        if summary.get("outline_hash") != assembled["outline_hash"]:
+            raise RuntimeError("formal delivery blocked: confirmed outline validation is stale")
     return {
         "validation_run_id": validation["validation_run_id"],
         "validated_content_sha256": content_sha256,
+        "outline_version_id": assembled["outline_version_id"],
+        "outline_hash": assembled["outline_hash"],
     }
 
 

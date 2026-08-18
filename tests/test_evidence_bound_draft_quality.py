@@ -158,6 +158,10 @@ class EvidenceBoundDraftQualityTests(unittest.TestCase):
         self.assertNotIn("医院智慧服务分级评估标准体系", policy)
         self.assertIn("医院智慧服务分级评估标准体系", standard)
         self.assertIn("不得据标题扩写政策要求", policy + standard)
+        self.assertIn("#### 1.2.1.1 政策筛选与采用原则", policy)
+        self.assertIn("#### 1.2.2.4 执行取证与版本更新", standard)
+        self.assertNotIn("引用《", policy + standard)
+        self.assertNotIn("正式报审前还需复核", policy + standard)
         for tag in ("high_quality_hospital", "electronic_medical_record", "evaluation"):
             self.assertNotIn(tag, policy + standard)
 

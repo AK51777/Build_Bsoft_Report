@@ -279,6 +279,7 @@ def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dic
             "exclusions": capability["exclusions"],
             "applicable_versions": capability["applicable_versions"],
             "standard_block_ids": relation_map.get(capability["capability_id"], []),
+            "block_match_scope": capability.get("block_match_scope", ""),
             "review_status": "approved",
             "source_location": capability["source_location"],
         }

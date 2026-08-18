@@ -229,7 +229,7 @@ def build_composition_plan(
             """
             SELECT m.map_id,m.scope_id,m.capability_id,m.status,m.confidence,
                     c.product_name,c.capability_name,c.module_name,c.selection_rules_json,
-                    c.standard_block_ids_json
+                    c.standard_block_ids_json,c.block_match_scope
             FROM scope_product_map m
             JOIN product_capability c ON c.capability_id=m.capability_id
             WHERE m.project_id=?
@@ -339,6 +339,12 @@ def build_composition_plan(
                 mapping["status"] == "candidate" for mapping in chapter_maps
             ):
                 missing.append("capability_mapping_review")
+            if role == "construction_content" and any(
+                mapping["status"] == "confirmed"
+                and mapping["block_match_scope"] == "product_heading_fallback"
+                for mapping in chapter_maps
+            ):
+                missing.append("capability_block_scope_review")
             generated_status = "blocked" if missing else "ready"
             conclusion_boundary = (
                 "Only confirmed/material-explicit facts and confirmed scope may be stated as certain; "
@@ -507,10 +513,13 @@ def build_composition_plan(
                 for node in outline_nodes:
                     if node["source_type"] != "corpus":
                         continue
-                    block_id = node["source_object_id"]
-                    current_mode = selected_block_modes.get(block_id, "")
-                    if node["usage_mode"] == "parameterized" or not current_mode:
-                        selected_block_modes[block_id] = node["usage_mode"]
+                    block_ids = node.get("metadata", {}).get("block_ids") or [
+                        node["source_object_id"]
+                    ]
+                    for block_id in block_ids:
+                        current_mode = selected_block_modes.get(block_id, "")
+                        if node["usage_mode"] == "parameterized" or not current_mode:
+                            selected_block_modes[block_id] = node["usage_mode"]
                 for block_id in sorted(selected_block_modes):
                     block = blocks_by_id.get(block_id)
                     if block is None:
@@ -521,7 +530,7 @@ def build_composition_plan(
                             block_id,
                             selected_block_modes[block_id],
                             (
-                                "bounded construction recall selected by the dynamic outline; "
+                                "construction block selected by the confirmed-capability outline; "
                                 f"location={block['source_location']}"
                             ),
                         )
@@ -554,6 +563,18 @@ def build_composition_plan(
                         str(level): sum(node["heading_level"] == level for node in outline_nodes)
                         for level in range(4, 8)
                     },
+                    "full_standard_block_count": len(
+                        {
+                            block_id
+                            for node in outline_nodes
+                            if node["source_type"] == "corpus"
+                            and node["usage_mode"] == "parameterized"
+                            for block_id in (
+                                node.get("metadata", {}).get("block_ids")
+                                or [node["source_object_id"]]
+                            )
+                        }
+                    ),
                 }
             )
         conn.commit()

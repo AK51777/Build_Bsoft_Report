@@ -69,6 +69,8 @@
 - `project_scope_item` / `scope_product_map`：客户清单边界与公司能力映射。
 - `section_blueprint`：章节目的、必答问题、必需事实和篇幅边界。
 - `section_composition_plan` / `section_plan_source`：本项目每节的事实、范围、政策、语料和禁止项组合计划。
+- `section_outline_node`：由客户范围、能力映射和标准块生成的建设内容四至七级来源节点。
+- `report_outline_version` / `report_outline_node`：一至七级完整目录的候选版、确认版、来源签名、目录哈希和不可变来源绑定；当前确认版是正文组装的目录权威。
 - `draft_section_version`：AI、人工和恢复版本；只有通过检查且被采用的版本进入交付候选。
 
 ### 校验与审计
@@ -117,8 +119,9 @@
 4. `004_policy_catalog_duplicate_index.sql`：允许保留重复来源索引号并增加冲突标记。
 5. `005_policy_catalog_runtime_view.sql`：重建政策目录发布视图，使新增冲突字段可查询。
 6. `006_runtime_policy_catalog.sql`：发布政策目录元数据，供项目建立候选目录快照。
+7. `007_capability_block_match_scope.sql`：发布能力—标准块匹配粒度，区分能力/模块级精确绑定与产品总标题回退。
 
-项目 SQLite 对应迁移为 `009_policy_catalog_candidates.sql`、`010_policy_catalog_duplicate_index.sql` 和 `011_policy_catalog_snapshot.sql`。目录以 `(catalog_id, source_row)` 保证来源行唯一，不再把索引号错误地当成唯一键；服务器目录以 `policy_catalog` 快照同步后才能参与项目候选匹配。
+项目 SQLite 的政策目录迁移为 `009_policy_catalog_candidates.sql`、`010_policy_catalog_duplicate_index.sql` 和 `011_policy_catalog_snapshot.sql`。`012_confirmed_report_outline.sql` 增加能力—标准块匹配粒度及一至七级目录候选/确认版本。政策目录仍以 `(catalog_id, source_row)` 保证来源行唯一，不再把索引号错误地当成唯一键；服务器目录以 `policy_catalog` 快照同步后才能参与项目候选匹配。
 
 ## 6. 迁移规则
 

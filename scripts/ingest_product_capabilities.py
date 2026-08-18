@@ -41,8 +41,8 @@ def ingest_capabilities(database: Path, payload: dict[str, Any]) -> dict[str, An
                   capability_description, prerequisites_json,
                   interface_dependencies_json, exclusions_json,
                   applicable_versions_json, standard_block_ids_json, review_status,
-                  category,module_name,selection_rules_json,source_location
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  category,module_name,selection_rules_json,source_location,block_match_scope
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(capability_id) DO UPDATE SET
                   product_code=excluded.product_code,
                   product_name=excluded.product_name,
@@ -56,6 +56,7 @@ def ingest_capabilities(database: Path, payload: dict[str, Any]) -> dict[str, An
                   category=excluded.category,module_name=excluded.module_name,
                   selection_rules_json=excluded.selection_rules_json,
                   source_location=excluded.source_location,
+                  block_match_scope=excluded.block_match_scope,
                   review_status=CASE
                     WHEN product_capability.review_status='retired'
                     THEN product_capability.review_status ELSE excluded.review_status END
@@ -76,6 +77,7 @@ def ingest_capabilities(database: Path, payload: dict[str, Any]) -> dict[str, An
                     capability.get("module_name", ""),
                     dump_json(capability.get("selection_rules", [])),
                     capability.get("source_location", ""),
+                    capability.get("block_match_scope", ""),
                 ),
             )
             created += int(exists is None)
