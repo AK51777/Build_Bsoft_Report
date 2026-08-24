@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "allowed_project_roots": [
+    "D:/path/to/local-projects"
+  ],
+  "response_mode": "review_metadata",
+  "allow_delivery_mode": false
+}

@@ -30,6 +30,77 @@ INLINE_PATTERN = re.compile(
 )
 
 
+def resolve_format_authority(
+    template: Path | None,
+    format_config: Path | None,
+) -> tuple[Path | None, dict[str, Any]]:
+    if format_config is None:
+        return (template.resolve() if template else None), {}
+    config_path = format_config.resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(config_path)
+    payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    if payload.get("schema_version") != "1.0":
+        raise ValueError("unsupported Word format authority schema_version")
+    if payload.get("status") != "confirmed":
+        raise ValueError("Word format authority must be confirmed before use")
+    if not str(payload.get("confirmed_by") or "").strip() or not str(
+        payload.get("confirmed_at") or ""
+    ).strip():
+        raise ValueError("confirmed Word format authority requires confirmed_by and confirmed_at")
+    authority = payload.get("authority")
+    if not isinstance(authority, dict) or not authority.get("template_path"):
+        raise ValueError("Word format authority requires authority.template_path")
+    configured_template = Path(str(authority["template_path"]))
+    if not configured_template.is_absolute():
+        configured_template = config_path.parent / configured_template
+    configured_template = configured_template.resolve()
+    if not configured_template.is_file():
+        raise FileNotFoundError(configured_template)
+    if template is not None and template.resolve() != configured_template:
+        raise ValueError("explicit Word template conflicts with the confirmed format authority")
+    expected_hash = str(authority.get("template_sha256") or "").lower()
+    actual_hash = sha256_file(configured_template)
+    if not expected_hash or actual_hash.lower() != expected_hash:
+        raise ValueError("confirmed Word template hash does not match the format authority")
+    semantic_styles = payload.get("semantic_styles") or {}
+    if not isinstance(semantic_styles, dict):
+        raise ValueError("semantic_styles must be an object")
+    evidence = payload.get("evidence") or {}
+    if not isinstance(evidence, dict):
+        raise ValueError("evidence must be an object")
+    resolved_evidence: dict[str, str] = {}
+    for label, path_key, hash_key in (
+        ("format profile", "format_profile_path", "format_profile_sha256"),
+        ("style contract", "style_contract_path", "style_contract_sha256"),
+    ):
+        configured_path = str(evidence.get(path_key) or "").strip()
+        if not configured_path:
+            continue
+        evidence_path = Path(configured_path)
+        if not evidence_path.is_absolute():
+            evidence_path = config_path.parent / evidence_path
+        evidence_path = evidence_path.resolve()
+        if not evidence_path.is_file():
+            raise FileNotFoundError(evidence_path)
+        expected_evidence_hash = str(evidence.get(hash_key) or "").lower()
+        if not expected_evidence_hash or sha256_file(evidence_path).lower() != expected_evidence_hash:
+            raise ValueError(f"confirmed {label} hash does not match the format authority")
+        resolved_evidence[path_key] = str(evidence_path)
+    payload["_config_path"] = str(config_path)
+    payload["_config_sha256"] = sha256_file(config_path)
+    payload["_resolved_template"] = str(configured_template)
+    payload["_resolved_evidence"] = resolved_evidence
+    return configured_template, payload
+
+
+def _style_name(document: Document, mapping: dict[str, str], key: str, default: str) -> str:
+    name = str(mapping.get(key) or default)
+    if name not in {style.name for style in document.styles}:
+        raise ValueError(f"Word format authority references a missing style: {key}={name}")
+    return name
+
+
 def set_run_font(run, east_asia: str, size: float, *, bold: bool = False) -> None:
     run.font.name = "Arial"
     run.font.size = Pt(size)
@@ -273,24 +344,36 @@ def plain_inline_text(value: str) -> str:
     return re.sub(r"\*\*|`|(?<!\*)\*(?!\*)", "", value).strip()
 
 
-def add_markdown_table(document: Document, rows: list[list[str]]) -> None:
+def add_markdown_table(
+    document: Document,
+    rows: list[list[str]],
+    semantic_styles: dict[str, str] | None = None,
+) -> None:
+    semantic_styles = semantic_styles or {}
     column_count = max(len(row) for row in rows)
     normalized = [row + [""] * (column_count - len(row)) for row in rows]
     if len(normalized) > 1 and all(re.fullmatch(r":?-{3,}:?", cell) for cell in normalized[1]):
         normalized.pop(1)
     table = document.add_table(rows=len(normalized), cols=column_count)
-    table.style = "Table Grid"
+    table.style = _style_name(document, semantic_styles, "table", "Table Grid")
     base = USABLE_WIDTH_DXA // column_count
     widths = [base] * column_count
     widths[-1] += USABLE_WIDTH_DXA - sum(widths)
     for row_index, row in enumerate(normalized):
         for column_index, value in enumerate(row):
             paragraph = table.cell(row_index, column_index).paragraphs[0]
+            paragraph.style = _style_name(
+                document,
+                semantic_styles,
+                "table_header" if row_index == 0 else "table_body",
+                "Normal",
+            )
             paragraph.paragraph_format.first_line_indent = Pt(0)
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if row_index == 0 else WD_ALIGN_PARAGRAPH.LEFT
             add_inline_markdown(paragraph, value)
-            for run in paragraph.runs:
-                set_run_font(run, "黑体" if row_index == 0 else "宋体", 10.5, bold=row_index == 0 or bool(run.bold))
+            if not semantic_styles:
+                for run in paragraph.runs:
+                    set_run_font(run, "黑体" if row_index == 0 else "宋体", 10.5, bold=row_index == 0 or bool(run.bold))
     set_table_geometry(table, widths)
     if table.rows:
         set_repeat_table_header(table.rows[0])
@@ -412,10 +495,11 @@ def build_docx(
     mode: str = "working",
     database: Path | None = None,
     project_code: str = "",
+    format_config: Path | None = None,
 ) -> dict[str, Any]:
     if mode not in {"working", "delivery"}:
         raise ValueError("mode must be working or delivery")
-    template = template.resolve() if template else None
+    template, format_authority = resolve_format_authority(template, format_config)
     if template and not template.is_file():
         raise FileNotFoundError(template)
     authorization = authorize_delivery(markdown, template, database, project_code) if mode == "delivery" else {}
@@ -424,15 +508,33 @@ def build_docx(
     if template:
         document = Document(template)
         scrub_template(document)
-        preset = "confirmed-template styles and page geometry"
+        preset = (
+            "confirmed format authority, template styles and page geometry"
+            if format_authority
+            else "confirmed-template styles and page geometry"
+        )
     else:
         document = Document()
         configure_document(document)
         preset = "A4 Chinese government feasibility working preset"
     configure_header_footer(document, project_name)
+    semantic_styles = {
+        str(key): str(value)
+        for key, value in (format_authority.get("semantic_styles") or {}).items()
+    }
+    heading_style_names = {
+        level: _style_name(
+            document,
+            semantic_styles,
+            f"heading_{level}",
+            f"Heading {level}",
+        )
+        for level in range(1, 8)
+    }
+    body_style_name = _style_name(document, semantic_styles, "body", "Normal")
     numbered_heading_levels = set()
     for level in range(1, 8):
-        style = document.styles[f"Heading {level}"]
+        style = document.styles[heading_style_names[level]]
         paragraph_properties = style.element.find(qn("w:pPr"))
         if paragraph_properties is not None and paragraph_properties.find(qn("w:numPr")) is not None:
             numbered_heading_levels.add(level)
@@ -499,7 +601,7 @@ def build_docx(
                     text = re.sub(r"^第(?:\d+|[一二三四五六七八九十百]+)章\s*", "", text)
                 else:
                     text = re.sub(r"^\d+(?:\.\d+){0,6}[.、．]?\s*", "", text)
-            document.add_paragraph(text, style=f"Heading {level}")
+            document.add_paragraph(text, style=heading_style_names[level])
             heading_levels[str(level)] += 1
             index += 1
             continue
@@ -514,13 +616,18 @@ def build_docx(
             while index < len(lines) and lines[index].strip().startswith("|"):
                 table_lines.append(parse_table_row(lines[index]))
                 index += 1
-            add_markdown_table(document, table_lines)
+            add_markdown_table(document, table_lines, semantic_styles)
             table_count += 1
             continue
         list_item = re.match(r"^(\s*)([-+*]|\d+[.)])\s+(.+)$", line)
         if list_item and not code_fence:
             marker = list_item.group(2)
-            paragraph = document.add_paragraph(style="List Bullet" if not marker[0].isdigit() else "List Number")
+            list_style = (
+                _style_name(document, semantic_styles, "list_bullet", "List Bullet")
+                if not marker[0].isdigit()
+                else _style_name(document, semantic_styles, "list_number", "List Number")
+            )
+            paragraph = document.add_paragraph(style=list_style)
             depth = min(4, len(list_item.group(1).replace("\t", "    ")) // 2)
             paragraph.paragraph_format.left_indent = Cm(0.74 + depth * 0.74)
             paragraph.paragraph_format.first_line_indent = Cm(-0.37)
@@ -528,7 +635,7 @@ def build_docx(
             paragraph_count += 1
             index += 1
             continue
-        paragraph = document.add_paragraph()
+        paragraph = document.add_paragraph(style=body_style_name)
         if code_fence:
             paragraph.paragraph_format.first_line_indent = Pt(0)
             run = paragraph.add_run(line)
@@ -564,6 +671,10 @@ def build_docx(
         "preset": preset,
         "template": str(template) if template else "",
         "template_sha256": sha256_file(template) if template else "",
+        "format_config": format_authority.get("_config_path", ""),
+        "format_config_sha256": format_authority.get("_config_sha256", ""),
+        "format_profile_id": format_authority.get("profile_id", ""),
+        "semantic_styles": semantic_styles,
         "heading_levels": heading_levels,
         "numbered_heading_levels": sorted(numbered_heading_levels),
         "headings": sum(heading_levels.values()),
@@ -582,6 +693,7 @@ def main() -> int:
     parser.add_argument("--project-name", required=True)
     parser.add_argument("--owner-name", default="")
     parser.add_argument("--template", type=Path)
+    parser.add_argument("--format-config", type=Path)
     parser.add_argument("--mode", choices=("working", "delivery"), default="working")
     parser.add_argument("--database", type=Path)
     parser.add_argument("--project-code", default="")
@@ -591,6 +703,7 @@ def main() -> int:
         args.input.read_text(encoding="utf-8-sig"), args.output,
         args.project_name, args.owner_name, args.template,
         mode=args.mode, database=args.database, project_code=args.project_code,
+        format_config=args.format_config,
     )
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.summary:

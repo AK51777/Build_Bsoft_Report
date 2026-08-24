@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "status": "candidate",
+  "profile_id": "",
+  "profile_hash": "",
+  "confirmed_by": "",
+  "confirmed_at": "",
+  "authority": {
+    "template_path": "",
+    "template_sha256": "",
+    "authority_rule": "user_confirmed_project_format_authority"
+  },
+  "evidence": {
+    "format_profile_path": "",
+    "format_profile_sha256": "",
+    "style_contract_path": "",
+    "style_contract_sha256": ""
+  },
+  "semantic_styles": {
+    "heading_1": "Heading 1",
+    "heading_2": "Heading 2",
+    "heading_3": "Heading 3",
+    "heading_4": "Heading 4",
+    "heading_5": "Heading 5",
+    "heading_6": "Heading 6",
+    "heading_7": "Heading 7",
+    "body": "Normal",
+    "list_bullet": "List Bullet",
+    "list_number": "List Number",
+    "table": "Table Grid",
+    "table_header": "Normal",
+    "table_body": "Normal",
+    "caption": "Caption"
+  },
+  "options": {
+    "preserve_template_page_geometry": true,
+    "preserve_template_numbering": true,
+    "scrub_reference_body_and_metadata": true,
+    "rebuild_dynamic_toc": true,
+    "semantic_markdown_only": true
+  },
+  "known_limitations": {
+    "standard_solution_content_format": "plain_text",
+    "heading_paths_preserved": true,
+    "original_tables_images_and_run_formatting_preserved": false,
+    "required_action": "如需逐对象保留原Word表格、图片和运行级格式，需从标准DOCX重建structured_json或ooxml_fragment知识包。"
+  }
+}

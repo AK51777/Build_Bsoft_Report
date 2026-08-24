@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
 from docx.shared import Cm
 
@@ -18,6 +20,7 @@ SCRIPTS = SKILL_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from build_report_docx import build_docx  # noqa: E402
+from knowledge_db import sha256_file  # noqa: E402
 
 
 PNG_1X1 = base64.b64decode(
@@ -31,6 +34,8 @@ class WordTemplateVariantTests(unittest.TestCase):
         normal = document.styles["Normal"]
         normal.font.name = "Arial"
         normal.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), font)
+        if "Body Text First Indent" not in {style.name for style in document.styles}:
+            document.styles.add_style("Body Text First Indent", WD_STYLE_TYPE.PARAGRAPH)
         section = document.sections[0]
         section.left_margin = Cm(margin_cm)
         section.right_margin = Cm(margin_cm)
@@ -84,6 +89,93 @@ class WordTemplateVariantTests(unittest.TestCase):
                     self.assertFalse(
                         any(name.startswith("word/media/") for name in package.namelist())
                     )
+
+    def test_confirmed_format_config_controls_template_and_semantic_styles(self) -> None:
+        markdown = "# 项目\n\n# 第1章 总论\n\n## 1.1 项目概况\n\n### 1.1.1 子标题\n\n模板正文。\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            output = root / "output.docx"
+            config = root / "word-format-authority.json"
+            self.make_template(template, "仿宋", 2.5, "AUTHORITY")
+            config.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "status": "confirmed",
+                        "profile_id": "PROFILE-TEST",
+                        "confirmed_by": "tester",
+                        "confirmed_at": "2026-08-24T12:00:00+08:00",
+                        "authority": {
+                            "template_path": template.name,
+                            "template_sha256": sha256_file(template),
+                        },
+                        "semantic_styles": {
+                            "heading_1": "Heading 1",
+                            "heading_2": "Heading 2",
+                            "heading_3": "Heading 3",
+                            "heading_4": "Heading 4",
+                            "heading_5": "Heading 5",
+                            "heading_6": "Heading 6",
+                            "heading_7": "Heading 7",
+                            "body": "Body Text First Indent",
+                            "table": "Table Grid",
+                            "table_header": "Normal",
+                            "table_body": "Normal",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = build_docx(
+                markdown,
+                output,
+                "模板测试项目",
+                format_config=config,
+            )
+
+            self.assertEqual(result["format_profile_id"], "PROFILE-TEST")
+            self.assertEqual(result["template_sha256"], sha256_file(template))
+            generated = Document(output)
+            body = next(paragraph for paragraph in generated.paragraphs if paragraph.text == "模板正文。")
+            subtitle = next(paragraph for paragraph in generated.paragraphs if paragraph.text == "1.1.1 子标题")
+            self.assertEqual(body.style.name, "Body Text First Indent")
+            self.assertEqual(subtitle.style.name, "Heading 3")
+
+    def test_format_config_rejects_changed_profile_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            evidence = root / "format-profile.json"
+            config = root / "word-format-authority.json"
+            self.make_template(template, "仿宋", 2.5, "EVIDENCE")
+            evidence.write_text("{}\n", encoding="utf-8")
+            config.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "status": "confirmed",
+                        "profile_id": "PROFILE-TEST",
+                        "confirmed_by": "tester",
+                        "confirmed_at": "2026-08-24T12:00:00+08:00",
+                        "authority": {
+                            "template_path": template.name,
+                            "template_sha256": sha256_file(template),
+                        },
+                        "evidence": {
+                            "format_profile_path": evidence.name,
+                            "format_profile_sha256": "0" * 64,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "format profile hash"):
+                build_docx("# 项目\n", root / "output.docx", "模板测试项目", format_config=config)
 
 
 if __name__ == "__main__":

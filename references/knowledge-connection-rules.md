@@ -58,7 +58,7 @@ python scripts/knowledge_doctor.py --project-root "D:\path\new-project" --profil
 ```powershell
 python scripts/provision_postgres_runtime_reader.py `
   --host 127.0.0.1 --port 15432 `
-  --database hrr_feedback --user <管理员账号> `
+  --database <数据库名> --user <管理员账号> `
   --schema medical_report_kb --output reader-plan.json
 ```
 
@@ -70,9 +70,9 @@ $env:MEDICAL_FEASIBILITY_DB_PASSWORD = "<新只读账号密码>"
 
 python scripts/provision_postgres_runtime_reader.py `
   --host 127.0.0.1 --port 15432 `
-  --database hrr_feedback --user <管理员账号> `
+  --database <数据库名> --user <管理员账号> `
   --schema medical_report_kb `
-  --apply --confirm-database hrr_feedback `
+  --apply --confirm-database <数据库名> `
   --output reader-apply-result.json
 ```
 
@@ -131,4 +131,6 @@ python scripts/run_project_pipeline.py "D:\path\new-project" --project-code PROJ
 
 ## 8. 团队与远程边界
 
-本版只保证同一台电脑跨项目复用。其他成员在不知道数据库密码的情况下访问服务器知识，需要服务端代理能力，例如带认证、授权、审计、限流和只读查询边界的远程 MCP/API；不能靠复制本地 profile 解决。该团队部署属于后续版本，本版不引入 MCP、插件、云托管、自动隧道或完整多租户 RLS。
+本版提供的`medical_report_mcp_server.py`只是在同一台电脑上通过`stdio`暴露清单对照、人工决定装配和Word生成。它不监听网络，且仍要求标准知识已经按本规则同步到项目SQLite；不得把它解释为服务器数据库代理，也不得在MCP配置中放入数据库密码或SSH密钥。具体接口边界见`mcp-service-rules.md`。
+
+其他成员在不知道数据库密码的情况下直接访问服务器知识，仍需要单独的服务端代理能力，包括身份认证、项目授权、租户隔离、审计、限流、只读查询边界和密钥托管；不能靠复制本地profile或把stdio服务改成公网监听解决。远程团队版MCP/API、云托管、自动隧道和完整多租户RLS仍属于后续版本。

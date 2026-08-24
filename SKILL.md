@@ -35,6 +35,8 @@ description: Create evidence-based Chinese government-investment medical informa
 - 建库、迁移或解释数据对象时，读取 `references/knowledge-base-schema.md`。
 - 解析 profile、诊断服务器、选择知识包、同步或验证快照时，读取 `references/knowledge-connection-rules.md`。
 - 处理客户清单、公司能力清单或投资对应关系时，读取 `references/scope-mapping-rules.md`。
+- 对照客户与公司模块清单、发起相似/缺失核对或完整装配标准建设方案时，读取 `references/construction-alignment-rules.md`；该链路不得交给通用语料改写器处理。
+- 需要让其他 AI 通过本机 MCP 只调用清单对照、人工确认装配和 Word 生成时，读取 `references/mcp-service-rules.md`；MCP 只作为现有确定性脚本的本机适配层，不得在接口层改写标准正文或绕过门禁。
 - 使用外地可研、历史方案或厂商方案时，读取 `references/reference-reuse-rules.md`。
 - 将高质量方案拆为语料块、映射产品能力或形成章节组合计划时，读取 `references/corpus-reuse-rules.md`。
 - 形成目录、任务包或逐章编写时，读取 `references/chapter-task-rules.md` 和 `references/medical-it-feasibility-writing.md`。
@@ -116,6 +118,12 @@ python scripts/build_reference_reuse_workpack.py <knowledge.sqlite> <project-cod
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/ingest_clean_documents_postgres.py clean-document-blocks.json --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output postgres-ingest-result.json
 python scripts/extract_xlsx_scope.py <scope.xlsx> --output xlsx-scope.json
 python scripts/ingest_scope_items_sqlite.py <knowledge.sqlite> <xlsx-scope.json> --project-code <project-code> --output scope-ingest-result.json
+python scripts/construction_alignment.py capture-scope <knowledge.sqlite> <project-code> <xlsx-scope.json> --output scope-display-snapshot.json
+python scripts/construction_alignment.py match <knowledge.sqlite> <project-code> --package-id <package-id> --output-json construction-match-review.json --output-md construction-match-review.md
+python scripts/construction_alignment.py apply-decisions <knowledge.sqlite> <construction-decisions.json> --output construction-decision-apply.json
+python scripts/construction_alignment.py assemble <knowledge.sqlite> <project-code> <match-run-id> --output-json construction-assembly-manifest.json --output-scope-md software-construction-list.md --output-solution-md application-software-solution.md --output-md construction-assembly.md
+python scripts/construction_alignment.py validate <knowledge.sqlite> <construction-assembly-manifest.json> --output construction-assembly-validation.json
+python scripts/medical_report_mcp_server.py --config <local-medical-report-mcp.json> --check-config  # 去掉--check-config后作为stdio MCP启动；规则见references/mcp-service-rules.md
 python scripts/build_scope_baseline.py <knowledge.sqlite> <project-code> --output scope-baseline.json
 python scripts/confirm_scope_baseline.py <knowledge.sqlite> <project-code> <baseline-id> --confirmed-by <name> --confirmed-at <time> --output scope-baseline-confirmation.json
 python scripts/build_traceability_matrix.py <knowledge.sqlite> <project-code> --links traceability-links.json --output-json traceability-matrix.json --output-csv traceability-matrix.csv
