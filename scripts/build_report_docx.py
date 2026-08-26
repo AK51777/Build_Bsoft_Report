@@ -8,6 +8,7 @@ import json
 import re
 import zipfile
 from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -116,11 +117,138 @@ def set_style_font(style, east_asia: str, size: float, *, bold: bool = False) ->
     style.font.name = "Arial"
     style.font.size = Pt(size)
     style.font.bold = bold
+    style.font.italic = False
     style.font.color.rgb = RGBColor(0, 0, 0)
     fonts = style.element.get_or_add_rPr().rFonts
     fonts.set(qn("w:eastAsia"), east_asia)
     fonts.set(qn("w:ascii"), "Arial")
     fonts.set(qn("w:hAnsi"), "Arial")
+
+
+def _append_val(parent, tag: str, value: str) -> OxmlElement:
+    element = OxmlElement(tag)
+    element.set(qn("w:val"), value)
+    parent.append(element)
+    return element
+
+
+def _insert_num_pr(paragraph_properties, num_pr: OxmlElement) -> None:
+    existing = paragraph_properties.find(qn("w:numPr"))
+    if existing is not None:
+        paragraph_properties.remove(existing)
+    paragraph_properties.insert_element_before(
+        num_pr,
+        "w:suppressLineNumbers",
+        "w:pBdr",
+        "w:shd",
+        "w:tabs",
+        "w:suppressAutoHyphens",
+        "w:kinsoku",
+        "w:wordWrap",
+        "w:overflowPunct",
+        "w:topLinePunct",
+        "w:autoSpaceDE",
+        "w:autoSpaceDN",
+        "w:bidi",
+        "w:adjustRightInd",
+        "w:snapToGrid",
+        "w:spacing",
+        "w:ind",
+        "w:contextualSpacing",
+        "w:mirrorIndents",
+        "w:suppressOverlap",
+        "w:jc",
+        "w:textDirection",
+        "w:textAlignment",
+        "w:textboxTightWrap",
+        "w:outlineLvl",
+        "w:divId",
+        "w:cnfStyle",
+        "w:rPr",
+        "w:sectPr",
+        "w:pPrChange",
+    )
+
+
+def _next_numbering_id(numbering, element_name: str, attribute_name: str) -> int:
+    values = []
+    for element in numbering.findall(qn(element_name)):
+        raw = element.get(qn(attribute_name))
+        if raw is not None and raw.isdigit():
+            values.append(int(raw))
+    return max(values, default=0) + 1
+
+
+def configure_default_heading_numbering(document: Document) -> int:
+    """Create deterministic H1-H7 numbering for the no-template working preset."""
+
+    numbering = document.part.numbering_part.element
+    abstract_num_id = _next_numbering_id(
+        numbering, "w:abstractNum", "w:abstractNumId"
+    )
+    num_id = _next_numbering_id(numbering, "w:num", "w:numId")
+
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
+    _append_val(abstract_num, "w:nsid", "4D454449")
+    _append_val(abstract_num, "w:multiLevelType", "multilevel")
+    _append_val(abstract_num, "w:tmpl", "46454153")
+
+    for level in range(7):
+        heading_style = document.styles[f"Heading {level + 1}"]
+        item = OxmlElement("w:lvl")
+        item.set(qn("w:ilvl"), str(level))
+        _append_val(item, "w:start", "1")
+        _append_val(
+            item,
+            "w:numFmt",
+            "chineseCountingThousand" if level == 0 else "decimal",
+        )
+        _append_val(item, "w:pStyle", heading_style.style_id)
+        if level > 0:
+            item.append(OxmlElement("w:isLgl"))
+        _append_val(item, "w:suff", "space")
+        level_text = "第%1章" if level == 0 else ".".join(
+            f"%{index}" for index in range(1, level + 2)
+        ) + "."
+        _append_val(item, "w:lvlText", level_text)
+        _append_val(item, "w:lvlJc", "left")
+        item_ppr = OxmlElement("w:pPr")
+        indent = OxmlElement("w:ind")
+        indent.set(qn("w:left"), "0")
+        indent.set(qn("w:firstLine"), "0")
+        item_ppr.append(indent)
+        item.append(item_ppr)
+        abstract_num.append(item)
+
+        style_num_pr = OxmlElement("w:numPr")
+        _append_val(style_num_pr, "w:ilvl", str(level))
+        _append_val(style_num_pr, "w:numId", str(num_id))
+        _insert_num_pr(heading_style.element.get_or_add_pPr(), style_num_pr)
+
+    numbering.append(abstract_num)
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+    _append_val(num, "w:abstractNumId", str(abstract_num_id))
+    numbering.append(num)
+    return num_id
+
+
+def bind_heading_numbering(paragraph, style) -> bool:
+    """Copy effective style numbering to the paragraph for Word/WPS parity."""
+
+    style_ppr = style.element.find(qn("w:pPr"))
+    style_num_pr = style_ppr.find(qn("w:numPr")) if style_ppr is not None else None
+    if style_num_pr is None:
+        return False
+    num_id = style_num_pr.find(qn("w:numId"))
+    ilvl = style_num_pr.find(qn("w:ilvl"))
+    if num_id is None or not str(num_id.get(qn("w:val")) or "").isdigit():
+        return False
+    if int(num_id.get(qn("w:val"))) <= 0 or ilvl is None:
+        return False
+    _insert_num_pr(paragraph._p.get_or_add_pPr(), deepcopy(style_num_pr))
+    return True
 
 
 def configure_document(document: Document) -> None:
@@ -167,6 +295,8 @@ def configure_document(document: Document) -> None:
         set_style_font(style, "仿宋_GB2312", 14)
         style.paragraph_format.space_after = Pt(0)
         style.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+
+    configure_default_heading_numbering(document)
 
 
 def add_field(paragraph, instruction: str, placeholder: str = "") -> None:
@@ -578,6 +708,7 @@ def build_docx(
     paragraph_count = 0
     table_count = 0
     heading_levels = {str(level): 0 for level in range(1, 8)}
+    explicitly_numbered_headings = 0
     code_fence = False
     while index < len(lines):
         line = lines[index].rstrip()
@@ -601,7 +732,15 @@ def build_docx(
                     text = re.sub(r"^第(?:\d+|[一二三四五六七八九十百]+)章\s*", "", text)
                 else:
                     text = re.sub(r"^\d+(?:\.\d+){0,6}[.、．]?\s*", "", text)
-            document.add_paragraph(text, style=heading_style_names[level])
+            paragraph = document.add_paragraph(text, style=heading_style_names[level])
+            if level in numbered_heading_levels:
+                if not bind_heading_numbering(
+                    paragraph, document.styles[heading_style_names[level]]
+                ):
+                    raise RuntimeError(
+                        f"failed to bind multilevel numbering to Heading {level}"
+                    )
+                explicitly_numbered_headings += 1
             heading_levels[str(level)] += 1
             index += 1
             continue
@@ -658,6 +797,15 @@ def build_docx(
     update_fields.set(qn("w:val"), "true")
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    expected_numbered_headings = sum(
+        heading_levels[str(level)] for level in numbered_heading_levels
+    )
+    if explicitly_numbered_headings != expected_numbered_headings:
+        raise RuntimeError(
+            "generated heading numbering audit failed: "
+            f"expected {expected_numbered_headings}, "
+            f"bound {explicitly_numbered_headings}"
+        )
     document.save(output)
     residue = audit_docx_markdown_residue(output)
     if mode == "delivery" and any(residue.values()):
@@ -677,6 +825,12 @@ def build_docx(
         "semantic_styles": semantic_styles,
         "heading_levels": heading_levels,
         "numbered_heading_levels": sorted(numbered_heading_levels),
+        "numbered_heading_paragraphs": explicitly_numbered_headings,
+        "heading_numbering_audit": {
+            "status": "pass",
+            "expected": expected_numbered_headings,
+            "explicitly_bound": explicitly_numbered_headings,
+        },
         "headings": sum(heading_levels.values()),
         "paragraphs": paragraph_count,
         "tables": table_count,

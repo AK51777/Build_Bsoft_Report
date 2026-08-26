@@ -144,6 +144,50 @@ class WordTemplateVariantTests(unittest.TestCase):
             self.assertEqual(body.style.name, "Body Text First Indent")
             self.assertEqual(subtitle.style.name, "Heading 3")
 
+    def test_default_preset_creates_and_explicitly_binds_multilevel_headings(self) -> None:
+        markdown = (
+            "# 项目\n\n"
+            "# 第1章 总论\n\n"
+            "## 1.1 项目概况\n\n"
+            "### 1.1.1 项目基本情况\n\n"
+            "#### 1.1.1.1 建设范围\n\n"
+            "正文。\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "default-numbering.docx"
+            result = build_docx(markdown, output, "默认编号测试项目")
+
+            self.assertEqual(result["numbered_heading_levels"], list(range(1, 8)))
+            self.assertEqual(result["numbered_heading_paragraphs"], 4)
+            self.assertEqual(
+                result["heading_numbering_audit"],
+                {"status": "pass", "expected": 4, "explicitly_bound": 4},
+            )
+
+            document = Document(output)
+            self.assertFalse(document.styles["Heading 4"].font.italic)
+            expected = {
+                "总论": 0,
+                "项目概况": 1,
+                "项目基本情况": 2,
+                "建设范围": 3,
+            }
+            num_ids = set()
+            for paragraph in document.paragraphs:
+                if paragraph.text not in expected:
+                    continue
+                num_pr = paragraph._p.pPr.numPr
+                self.assertIsNotNone(num_pr)
+                self.assertEqual(num_pr.ilvl.val, expected[paragraph.text])
+                self.assertGreater(num_pr.numId.val, 0)
+                num_ids.add(num_pr.numId.val)
+            self.assertEqual(len(num_ids), 1)
+            with zipfile.ZipFile(output) as package:
+                numbering_xml = package.read("word/numbering.xml").decode(
+                    "utf-8", errors="ignore"
+                )
+            self.assertEqual(numbering_xml.count("<w:isLgl"), 6)
+
     def test_format_config_rejects_changed_profile_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
