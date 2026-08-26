@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from build_dynamic_construction_outline import build_outline_nodes
+from chapter_rules import resolve_chapter_rule
 from knowledge_db import apply_migrations, connect, dump_json, load_json, now_iso, stable_id
 
 
@@ -103,15 +104,100 @@ def text_grams(value: str) -> set[str]:
 
 
 def rank_corpus_blocks(blocks: list[Any], query: str, limit: int = 10) -> list[Any]:
-    query_grams = text_grams(query)
+    del query
+    return sorted(
+        blocks,
+        key=lambda block: (
+            int(block["source_order"] or 0),
+            str(block["content_slot"] or ""),
+            str(block["block_id"]),
+        ),
+    )[:limit]
 
-    def score(block: Any) -> tuple[float, int, str]:
-        candidate = f"{block['source_location']} {block['clean_text'][:500]}"
-        candidate_grams = text_grams(candidate)
-        overlap = len(query_grams & candidate_grams) / max(1, len(query_grams))
-        return (-overlap, len(block["clean_text"]), block["block_id"])
 
-    return sorted(blocks, key=score)[:limit]
+HOSPITAL_PROJECT_TYPES = {"smart_hospital", "hospital_informationization"}
+
+
+def project_type_compatible(candidate_types: set[str], project_type: str) -> bool:
+    if project_type in candidate_types:
+        return True
+    return project_type in HOSPITAL_PROJECT_TYPES and bool(
+        candidate_types.intersection(HOSPITAL_PROJECT_TYPES)
+    )
+
+
+def narrative_block_eligible(block: Any, project_type: str) -> bool:
+    source_type = block["source_corpus_type"] or "legacy_unspecified"
+    content_type = block["content_type"] or "legacy_unspecified"
+    applicable_project_types = set(
+        json.loads(block["applicable_project_types_json"] or "[]")
+    )
+    project_type_matches = (
+        project_type_compatible(applicable_project_types, project_type)
+        if applicable_project_types
+        else project_type_compatible(
+            {str(block["corpus_project_type"] or "")}, project_type
+        )
+    )
+    return source_type in {
+        "reference_feasibility",
+        "generic_reference",
+    } and content_type in {
+        "feasibility_narrative",
+        "common_narrative",
+        "structure_only",
+    } and project_type_matches
+
+
+def normalize_assessment_target(framework: str, value: str) -> str:
+    compact = re.sub(r"\s+", "", str(value or "")).casefold()
+    digit_map = {"一": "1", "二": "2", "三": "3", "四": "4", "五": "5", "六": "6"}
+    for chinese, digit in digit_map.items():
+        compact = compact.replace(chinese, digit)
+    if framework == "interoperability":
+        if re.search(r"4(?:级)?(?:甲等|甲|a)", compact):
+            return "4a"
+    match = re.search(r"([1-9])(?:级|level)?", compact)
+    return match.group(1) if match else compact
+
+
+def project_assessment_targets(project: Any, facts: list[Any]) -> dict[str, set[str]]:
+    values: list[str] = []
+    try:
+        values.extend(json.loads(project["acceptance_targets_json"] or "[]"))
+    except (KeyError, TypeError, json.JSONDecodeError):
+        pass
+    result: dict[str, set[str]] = {}
+    for fact in facts:
+        if fact["fact_status"] in {"conflict", "not_applicable", "reference_only"}:
+            continue
+        key = str(fact["fact_key"] or "")
+        content = str(fact["fact_content"] or "")
+        if key.startswith("acceptance."):
+            values.append(content)
+    for value in values:
+        text = str(value)
+        if "电子病历" in text or re.search(r"\bemr\b", text, re.IGNORECASE):
+            normalized = normalize_assessment_target("emr", text)
+            if normalized:
+                result.setdefault("emr", set()).add(normalized)
+        if "互联互通" in text or "interop" in text.casefold():
+            normalized = normalize_assessment_target("interoperability", text)
+            if normalized:
+                result.setdefault("interoperability", set()).add(normalized)
+    return result
+
+
+def assessment_targets_compatible(
+    block: Any, project_targets: dict[str, set[str]]
+) -> bool:
+    targets = json.loads(block["assessment_targets_json"] or "[]")
+    for target in targets:
+        framework = str(target.get("framework") or "")
+        expected = normalize_assessment_target(framework, target.get("target", ""))
+        if not expected or expected not in project_targets.get(framework, set()):
+            return False
+    return True
 
 
 POLICY_TOPIC_GROUPS = {
@@ -141,8 +227,22 @@ def build_composition_plan(
     *,
     blueprint_payload: dict[str, Any] | None = None,
     version_no: int = 1,
+    chapter_codes: list[str] | None = None,
 ) -> dict[str, Any]:
     blueprint_payload = blueprint_payload or load_json(DEFAULT_BLUEPRINTS)
+    requested = list(dict.fromkeys(chapter_codes or []))
+    outline_items = list(blueprint_payload.get("outline", []))
+    if requested:
+        requested_set = set(requested)
+        available = {str(item["chapter_code"]) for item in outline_items}
+        missing = [code for code in requested if code not in available]
+        if missing:
+            raise ValueError(
+                "requested chapters are not present in the blueprint: " + ", ".join(missing)
+            )
+        outline_items = [
+            item for item in outline_items if str(item["chapter_code"]) in requested_set
+        ]
     timestamp = now_iso()
     with connect(database.resolve()) as conn:
         applied_migrations = apply_migrations(conn)
@@ -160,9 +260,10 @@ def build_composition_plan(
             )
         }
         facts = conn.execute(
-            "SELECT fact_id,fact_key,fact_status FROM project_fact WHERE project_id=?",
+            "SELECT fact_id,fact_key,fact_content,normalized_value,fact_status FROM project_fact WHERE project_id=?",
             (project["project_id"],),
         ).fetchall()
+        assessment_target_map = project_assessment_targets(project, facts)
         scopes = conn.execute(
             """
             SELECT scope_id,standard_name,domain,item_type,investment_category,status,
@@ -216,14 +317,18 @@ def build_composition_plan(
             """
             SELECT b.block_id,b.section_role,b.module_code,b.clean_text,b.source_location,
                    b.heading_path_json,
-                   b.reuse_class,b.review_status,s.source_scope
+                   b.reuse_class,b.review_status,s.source_scope,
+                   d.source_corpus_type,b.content_type,b.semantic_section,b.content_slot,
+                   b.source_order,b.adaptation_mode,b.assessment_targets_json,
+                   b.construction_scope_tags_json,b.applicable_project_types_json,
+                   d.project_type AS corpus_project_type
             FROM corpus_block b JOIN corpus_document d ON d.corpus_document_id=b.corpus_document_id
             JOIN source_document s ON s.source_id=d.source_id
             WHERE (s.project_id=? OR s.source_scope='shared')
               AND b.review_status IN ('approved','pending')
-              AND d.document_type=? AND d.project_type=?
+              AND d.document_type=?
             """,
-            (project["project_id"], project["document_type"], project["project_type"]),
+            (project["project_id"], project["document_type"]),
         ).fetchall()
         capability_maps = conn.execute(
             """
@@ -238,12 +343,12 @@ def build_composition_plan(
         ).fetchall()
 
         plans = []
-        for outline_item in blueprint_payload.get("outline", []):
+        for outline_item in outline_items:
             role = outline_item["section_role"]
+            generation_contract = resolve_chapter_rule(chapter_code := str(outline_item["chapter_code"]), role)
             blueprint = blueprints.get(role)
             if blueprint is None:
                 raise RuntimeError(f"approved blueprint not found for role: {role}")
-            chapter_code = str(outline_item["chapter_code"])
             plan_id = stable_id(
                 "SECTIONPLAN", project["project_id"], chapter_code, version_no
             )
@@ -467,15 +572,38 @@ def build_composition_plan(
                         )
                     )
             if role != "construction_content":
+                semantic_sections = set(
+                    generation_contract.get("canonical_semantic_sections")
+                    or generation_contract.get("semantic_sections")
+                    or []
+                )
+                content_slots = set(generation_contract.get("content_slots") or [])
+                content_slot_prefixes = tuple(
+                    generation_contract.get("content_slot_prefixes") or []
+                )
                 role_blocks = [
                     block
                     for block in corpus_blocks
-                    if block["section_role"] == role
+                    if semantic_sections
+                    and block["semantic_section"] in semantic_sections
+                    and (
+                        not content_slots
+                        or block["content_slot"] in content_slots
+                    )
+                    and (
+                        not content_slot_prefixes
+                        or str(block["content_slot"] or "").startswith(
+                            content_slot_prefixes
+                        )
+                    )
                     and block["review_status"] == "approved"
+                    and narrative_block_eligible(block, project["project_type"])
+                    and assessment_targets_compatible(block, assessment_target_map)
                 ]
                 for block in rank_corpus_blocks(
                     role_blocks,
                     f"{outline_item['section_title']} {blueprint['purpose']}",
+                    limit=generation_contract.get("max_corpus_blocks", 16),
                 ):
                     usage_mode = (
                         "direct" if block["review_status"] == "approved" and block["reuse_class"] == "A"
@@ -485,7 +613,14 @@ def build_composition_plan(
                     )
                     sources.append((
                         "corpus", block["block_id"], usage_mode,
-                        f"role={block['section_role']}; location={block['source_location']}",
+                        (
+                            f"role={block['section_role']}; semantic_section={block['semantic_section']}; "
+                            f"content_slot={block['content_slot']}; content_type={block['content_type']}; "
+                            f"source_corpus_type={block['source_corpus_type']}; "
+                            f"assembly_mode={generation_contract['assembly_mode']}; "
+                            f"canonical_chapter={generation_contract.get('canonical_chapter_code', '')}; "
+                            f"location={block['source_location']}"
+                        ),
                     ))
             if role == "construction_content":
                 for mapping in chapter_maps:
@@ -582,6 +717,8 @@ def build_composition_plan(
         "database": str(database.resolve()),
         "project_code": project_code,
         "version_no": version_no,
+        "selection_mode": "chapter" if requested else "all_blueprint_chapters",
+        "requested_chapters": requested,
         "plan_count": len(plans),
         "ready_count": sum(plan["status"] == "ready" for plan in plans),
         "blocked_count": sum(
@@ -602,6 +739,12 @@ def main() -> int:
     parser.add_argument("project_code")
     parser.add_argument("--blueprints", type=Path, default=DEFAULT_BLUEPRINTS)
     parser.add_argument("--version-no", type=int, default=1)
+    parser.add_argument(
+        "--chapter",
+        action="append",
+        dest="chapters",
+        help="仅重建指定章节计划；可重复使用，例如 --chapter 5.1.1",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = build_composition_plan(
@@ -609,6 +752,7 @@ def main() -> int:
         args.project_code,
         blueprint_payload=load_json(args.blueprints),
         version_no=args.version_no,
+        chapter_codes=args.chapters,
     )
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:

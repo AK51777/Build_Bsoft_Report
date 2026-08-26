@@ -10,50 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from build_policy_section_material import policy_source_material
+from chapter_rules import (
+    CHAPTER_ARGUMENT_OUTLINES,
+    ROLE_ARGUMENT_OUTLINES,
+    resolve_chapter_rule,
+)
 from knowledge_db import apply_migrations, connect
-
-
-ROLE_ARGUMENT_OUTLINES = {
-    "project_overview": ["项目定位与编制边界", "建设范围分类", "建设方式与依赖", "验收与决策边界"],
-    "basis": ["国家政策法规", "行业标准与评价规范", "政策条款与本项目关系", "适用性及有效性边界"],
-    "current_state": ["资料边界与核实口径", "业务运行现状", "应用系统现状", "数据接口与基础环境", "待核实事项"],
-    "problem_need": ["证据支持的问题表现", "成因与影响链", "建设需求响应", "范围承载与优先关系"],
-    "necessity_feasibility": ["政策必要性", "业务必要性", "技术可行性", "数据与安全可行性", "实施条件与约束"],
-    "overall_design": ["建设原则", "总体目标", "业务与应用架构", "数据与集成架构", "技术与安全架构", "验收闭环"],
-    "construction_content": ["客户清单范围", "能力映射", "功能流程", "数据接口", "安全控制", "验收取证"],
-    "implementation_operation": ["项目治理与组织分工", "阶段计划与成果物", "配置和开发管理", "数据迁移", "测试与上线切换", "培训与知识转移", "运维服务与SLA", "质量安全和变更控制"],
-    "investment_funding": ["估算范围与口径", "范围和费用映射", "计价依据与复核", "资金来源和年度安排", "概算变更控制"],
-    "benefit_performance": ["医疗服务效益", "临床与质量效益", "运营管理效益", "数据与安全效益", "社会效益", "指标定义与取证", "基线目标和评价机制"],
-    "risk": ["政策与合规风险", "范围与需求风险", "数据迁移风险", "接口与技术风险", "网络数据安全风险", "进度质量与运维风险"],
-    "conclusion": ["研究判断", "推进条件", "待确认前置事项", "后续工作建议"],
-}
-
-CHAPTER_ARGUMENT_OUTLINES = {
-    "1.1.1": ["项目定位与编制边界", "验收与决策边界"],
-    "1.1.2": ["建设范围分类", "建设方式与依赖", "验收与决策边界"],
-    "1.2.1": ["政策筛选与采用原则", "政策法规依据清单", "适用条款与建设承接", "效力复核与动态更新"],
-    "1.2.2": ["标准筛选与采用原则", "标准规范依据清单", "适用条款与建设承接", "执行取证与版本更新"],
-    "2.1.1": ["资料边界与核实口径", "业务运行现状", "待核实事项"],
-    "2.1.2": ["资料边界与核实口径", "应用系统现状", "数据接口与基础环境", "待核实事项"],
-    "2.2.1": ["证据支持的问题表现", "成因与影响链", "范围承载与优先关系"],
-    "2.2.2": ["建设需求响应", "范围承载与优先关系", "验收与决策边界"],
-    "3.1.1": ["政策必要性", "业务必要性", "实施条件与约束"],
-    "3.2.1": ["技术可行性", "数据与安全可行性", "实施条件与约束"],
-    "4.1.1": ["建设原则", "业务与应用架构", "数据与集成架构", "技术与安全架构"],
-    "4.1.2": ["总体目标", "指标定义与取证", "基线目标和评价机制", "验收闭环"],
-    "4.2.1": ["业务与应用架构", "数据与集成架构", "技术与安全架构", "验收闭环"],
-    "4.2.2": ["数据与集成架构", "技术与安全架构", "网络数据安全风险", "验收闭环"],
-    "6.1.1": ["项目治理与组织分工", "阶段计划与成果物", "进度与里程碑控制", "质量安全和变更控制"],
-    "6.1.2": ["数据迁移", "测试与上线切换", "业务连续性与回退", "配置和开发管理"],
-    "6.2.1": ["培训与知识转移", "运维服务与SLA", "运行监测与持续改进", "运维交接与服务评价"],
-    "7.1.1": ["估算范围与口径", "计价依据与复核", "全生命周期成本"],
-    "7.1.2": ["范围和费用映射", "软件与服务费用", "基础资源与其他费用", "概算变更控制"],
-    "7.2.1": ["资金来源和年度安排", "支付条件与资金控制", "运行维护经费"],
-    "8.1.1": ["医疗服务效益", "临床与质量效益", "运营管理效益", "数据与安全效益", "社会效益"],
-    "8.2.1": ["指标体系设计", "指标定义与取证", "基线目标和评价机制", "验收闭环"],
-    "9.1.1": ["政策与合规风险", "范围与需求风险", "数据迁移风险", "接口与技术风险", "网络数据安全风险", "进度质量与运维风险"],
-    "10.1.1": ["研究判断", "推进条件", "待确认前置事项", "后续工作建议"],
-}
 
 
 def json_value(value: str) -> Any:
@@ -146,6 +108,25 @@ def render_markdown(package: dict[str, Any]) -> str:
     if argument_outline:
         lines.extend(["", "## 推荐论证层次", ""])
         lines.extend(f"- {item}" for item in argument_outline)
+    contract = package.get("generation_contract") or {}
+    if contract:
+        lines.extend(
+            [
+                "",
+                "## 章节生成契约",
+                "",
+                f"- 规则层：{' → '.join(contract.get('rule_layers', []))}",
+                f"- 组装方式：`{contract.get('assembly_mode', 'evidence_bound_argument')}`",
+                "- 必需来源类型："
+                + "、".join(contract.get("required_source_types", []) or ["无额外要求"]),
+            ]
+        )
+        lines.extend(
+            f"- 完成检查：{item}" for item in contract.get("completion_checks", [])
+        )
+        lines.extend(
+            f"- 禁止输出：{item}" for item in contract.get("forbidden_output_phrases", [])
+        )
     lines.extend(["", "## 必备表格", ""])
     lines.extend(f"- {table}" for table in plan["required_tables"] or ["无强制表格"])
     lines.extend(["", "## 禁止内容", ""])
@@ -204,7 +185,14 @@ def render_markdown(package: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def export_packages(database: Path, project_code: str, output_dir: Path, version_no: int = 1) -> dict:
+def export_packages(
+    database: Path,
+    project_code: str,
+    output_dir: Path,
+    version_no: int = 1,
+    *,
+    chapter_codes: list[str] | None = None,
+) -> dict:
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     with connect(database.resolve()) as conn:
@@ -214,7 +202,7 @@ def export_packages(database: Path, project_code: str, output_dir: Path, version
         ).fetchone()
         if project is None:
             raise RuntimeError(f"project_code {project_code} is not initialized")
-        plans = conn.execute(
+        plans = list(conn.execute(
             """
             SELECT p.*,b.section_role FROM section_composition_plan p
             LEFT JOIN section_blueprint b ON b.blueprint_id=p.blueprint_id
@@ -222,9 +210,20 @@ def export_packages(database: Path, project_code: str, output_dir: Path, version
             ORDER BY chapter_code
             """,
             (project["project_id"], version_no),
-        ).fetchall()
+        ).fetchall())
         if not plans:
             raise RuntimeError("no section composition plans found; build plans first")
+        requested = list(dict.fromkeys(chapter_codes or []))
+        if requested:
+            requested_set = set(requested)
+            plans = [plan for plan in plans if plan["chapter_code"] in requested_set]
+            found = {plan["chapter_code"] for plan in plans}
+            missing = [code for code in requested if code not in found]
+            if missing:
+                raise RuntimeError(
+                    "requested chapter plans were not found or are not applicable: "
+                    + ", ".join(missing)
+                )
         written = []
         blocked = 0
         for plan_row in plans:
@@ -259,8 +258,11 @@ def export_packages(database: Path, project_code: str, output_dir: Path, version
                 }
                 for source in source_rows
             ]
+            contract = resolve_chapter_rule(
+                plan["chapter_code"], plan.get("section_role", "")
+            )
             package = {
-                "schema_version": "1.0",
+                "schema_version": "1.1",
                 "project": dict(project),
                 "plan": plan,
                 "sources": sources,
@@ -271,10 +273,8 @@ def export_packages(database: Path, project_code: str, output_dir: Path, version
                     }
                     for node in outline_rows
                 ],
-                "recommended_argument_outline": CHAPTER_ARGUMENT_OUTLINES.get(
-                    plan["chapter_code"],
-                    ROLE_ARGUMENT_OUTLINES.get(plan.get("section_role", ""), []),
-                ),
+                "recommended_argument_outline": contract["argument_outline"],
+                "generation_contract": contract,
                 "source_summary": {
                     mode: sum(source["usage_mode"] == mode for source in sources)
                     for mode in (
@@ -298,6 +298,8 @@ def export_packages(database: Path, project_code: str, output_dir: Path, version
     return {
         "project_code": project_code,
         "version_no": version_no,
+        "selection_mode": "chapter" if requested else "all_applicable_chapters",
+        "requested_chapters": requested,
         "package_count": len(plans),
         "blocked_package_count": blocked,
         "files_written": written,
@@ -310,10 +312,20 @@ def main() -> int:
     parser.add_argument("project_code")
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--version-no", type=int, default=1)
+    parser.add_argument(
+        "--chapter",
+        action="append",
+        dest="chapters",
+        help="仅导出指定章节；可重复使用，例如 --chapter 5.1.1",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = export_packages(
-        args.database, args.project_code, args.output_dir, args.version_no
+        args.database,
+        args.project_code,
+        args.output_dir,
+        args.version_no,
+        chapter_codes=args.chapters,
     )
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:

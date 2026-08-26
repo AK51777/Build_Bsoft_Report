@@ -13,6 +13,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from build_scope_baseline import build_scope_baseline  # noqa: E402
 from build_traceability_matrix import build_traceability_matrix  # noqa: E402
+from apply_scope_item_decisions import apply_scope_item_decisions  # noqa: E402
 from confirm_scope_baseline import confirm_scope_baseline  # noqa: E402
 from ingest_project_facts import ingest  # noqa: E402
 from ingest_scope_items_sqlite import ingest_scope_payload  # noqa: E402
@@ -64,15 +65,38 @@ class ScopeBaselineTraceabilityTests(unittest.TestCase):
                     confirmed_at="2026-08-11T10:00:00+08:00",
                 )
 
-            conn = sqlite3.connect(database)
-            try:
-                conn.execute(
-                    "UPDATE project_scope_item SET status='confirmed',chapter_location='5.1.1' WHERE scope_id=?",
-                    (scope_id,),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+            applied = apply_scope_item_decisions(
+                database,
+                {
+                    "project_code": "TEST-TRACE-001",
+                    "baseline_id": pending["baseline_id"],
+                    "expected_content_hash": pending["content_hash"],
+                    "confirmed_by": "reviewer",
+                    "confirmed_at": "2026-08-11T10:03:00+08:00",
+                    "default_decision": "include",
+                    "decision_note": "Synthetic scope confirmation.",
+                    "decisions": [
+                        {
+                            "scope_id": scope_id,
+                            "decision": "include",
+                            "chapter_location": "5.1.1",
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(applied["applied"], 1)
+            duplicate_apply = apply_scope_item_decisions(
+                database,
+                {
+                    "project_code": "TEST-TRACE-001",
+                    "baseline_id": pending["baseline_id"],
+                    "expected_content_hash": pending["content_hash"],
+                    "confirmed_by": "reviewer",
+                    "confirmed_at": "2026-08-11T10:03:00+08:00",
+                    "default_decision": "include",
+                },
+            )
+            self.assertEqual(duplicate_apply["duplicates"], 1)
             confirmed_candidate = build_scope_baseline(database, "TEST-TRACE-001")
             self.assertNotEqual(confirmed_candidate["baseline_id"], pending["baseline_id"])
             confirmation = confirm_scope_baseline(

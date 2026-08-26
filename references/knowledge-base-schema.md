@@ -63,10 +63,14 @@
 
 ### 语料、产品与章节生成
 
-- `corpus_document` / `corpus_block`：原始方案和原子语料块。
+- `corpus_document` / `corpus_block`：原始方案和原子语料块。文档用 `source_corpus_type` 区分标准方案、参考可研和通用参考；块用 `content_type` 区分建设方案、可研论证、通用描述、项目专属和结构复用，并保存 `semantic_section`、`content_slot`、原顺序、适配方式及测评目标。
+- `project.project_type` 与语料 `applicable_project_types` 保留 `medical_consortium`、`regional_health_platform` 扩展值；当前运行注册表将其标记为 `reserved_not_implemented`，只有医院类型允许构建参考语料发布包。
 - `corpus_tag`：受控标签，不允许自由造同义标签。
 - `product_capability`：产品能力、前提、接口依赖和不包含内容。
 - `project_scope_item` / `scope_product_map`：客户清单边界与公司能力映射。
+- `construction_scope_snapshot` / `construction_scope_row`：客户清单完整显示负载、来源行和原顺序的本地冻结快照。
+- `construction_match_run` / `construction_match_candidate` / `construction_match_decision`：模块级标准候选、唯一方案根标题和追加式人工决定。
+- `construction_assembly_manifest` / `construction_assembly_item`：按客户顺序装配的标准方案块、逐块哈希和缺口标记。
 - `section_blueprint`：章节目的、必答问题、必需事实和篇幅边界。
 - `section_composition_plan` / `section_plan_source`：本项目每节的事实、范围、政策、语料和禁止项组合计划。
 - `section_outline_node`：由客户范围、能力映射和标准块生成的建设内容四至七级来源节点。
@@ -120,8 +124,11 @@
 5. `005_policy_catalog_runtime_view.sql`：重建政策目录发布视图，使新增冲突字段可查询。
 6. `006_runtime_policy_catalog.sql`：发布政策目录元数据，供项目建立候选目录快照。
 7. `007_capability_block_match_scope.sql`：发布能力—标准块匹配粒度，区分能力/模块级精确绑定与产品总标题回退。
+8. `008_corpus_semantic_types.sql`：增加标准方案/参考可研来源分型、块内容分型、语义章节、内容槽位、原顺序、适配方式和测评目标，并扩展运行视图。
+9. `009_construction_solution_subtree.sql`：为标准块增加内容格式、结构化负载、资产清单和可见文本哈希，为能力—块关系增加根标题路径、关系顺序和逐字装配资格；服务器仍不保存任何项目清单或决定。
+10. `010_standard_solution_coverage.sql`：保存标准方案源段落 ID、连续块序号和标题标志，并通过运行视图发布源段落清单及块级完整性字段。
 
-项目 SQLite 的政策目录迁移为 `009_policy_catalog_candidates.sql`、`010_policy_catalog_duplicate_index.sql` 和 `011_policy_catalog_snapshot.sql`。`012_confirmed_report_outline.sql` 增加能力—标准块匹配粒度及一至七级目录候选/确认版本。政策目录仍以 `(catalog_id, source_row)` 保证来源行唯一，不再把索引号错误地当成唯一键；服务器目录以 `policy_catalog` 快照同步后才能参与项目候选匹配。
+项目 SQLite 的政策目录迁移为 `009_policy_catalog_candidates.sql`、`010_policy_catalog_duplicate_index.sql` 和 `011_policy_catalog_snapshot.sql`。`012_confirmed_report_outline.sql` 增加能力—标准块匹配粒度及一至七级目录候选/确认版本；`013_corpus_semantic_types.sql` 增加参考可研和标准方案双轴分类及语义槽位；`014_construction_alignment.sql` 增加本地清单显示快照、模块候选、人工决定和装配清单；`015_construction_rich_content.sql` 将服务器的结构化内容、资产清单和可见文本哈希带入项目快照；`016_capability_solution_block_relation.sql` 固化能力—标准方案块关系；`017_standard_solution_coverage.sql` 保存标准块的源段落 ID、连续块序号和标题标志。政策目录仍以 `(catalog_id, source_row)` 保证来源行唯一，不再把索引号错误地当成唯一键；服务器目录以 `policy_catalog` 快照同步后才能参与项目候选匹配。
 
 ## 6. 迁移规则
 

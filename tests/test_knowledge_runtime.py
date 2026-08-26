@@ -22,6 +22,10 @@ from knowledge_snapshot import KnowledgeSnapshotError, validate_snapshots  # noq
 from knowledge_db import connect, dump_json, sha256_text  # noqa: E402
 from query_local_knowledge import query_local  # noqa: E402
 from run_project_pipeline import run_pipeline  # noqa: E402
+from standard_solution_coverage import (  # noqa: E402
+    audit_standard_solution_coverage,
+    build_source_section_manifest,
+)
 from sync_postgres_knowledge_snapshot import (  # noqa: E402
     KnowledgeSelectionError,
     record_snapshot,
@@ -297,7 +301,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
                 "review_status": "approved",
             }
             pack = {
-                "schema_version": "1.0",
+                "schema_version": "1.1",
                 "package_id": "PACK-001",
                 "title": "测试标准知识包",
                 "permission_scope": "internal_company_reuse",
@@ -318,6 +322,10 @@ class KnowledgeRuntimeTests(unittest.TestCase):
                     "blocks": [
                         {
                             "block_id": "BLOCK-001",
+                            "source_section_id": "SECTION-001",
+                            "source_order": 1,
+                            "chunk_index": 1,
+                            "source_is_heading": True,
                             "source_location": "建设内容 / 电子病历系统",
                             "heading_path": ["建设内容", "电子病历系统"],
                             "section_role": "construction_content",
@@ -333,6 +341,25 @@ class KnowledgeRuntimeTests(unittest.TestCase):
                     ],
                 },
                 "capabilities": [capability],
+            }
+            source_sections = build_source_section_manifest(
+                [
+                    {
+                        "source_section_id": "SECTION-001",
+                        "source_order": 1,
+                        "source_location": "建设内容 / 电子病历系统",
+                        "heading_path": ["建设内容", "电子病历系统"],
+                        "source_is_heading": True,
+                        "clean_text": block_text,
+                    }
+                ],
+                pack["corpus"]["blocks"],
+            )
+            pack["corpus"]["source_sections"] = source_sections
+            pack["review_summary"] = {
+                "standard_solution_coverage": audit_standard_solution_coverage(
+                    source_sections, pack["corpus"]["blocks"]
+                )
             }
             import_pack(database, pack)
             record_snapshot(

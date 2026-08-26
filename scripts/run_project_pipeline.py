@@ -1092,6 +1092,13 @@ def run_pipeline(
         else:
             delivery_config = config.get("delivery", {})
             configured_template = str(delivery_config.get("word_template", "")).strip()
+            configured_format = str(delivery_config.get("word_format_config", "")).strip()
+            format_config_path = None
+            format_authority = {}
+            if configured_format:
+                format_config_path = Path(configured_format)
+                if not format_config_path.is_absolute():
+                    format_config_path = workbench / format_config_path
             selected_template = word_template
             if selected_template is None and configured_template:
                 selected_template = Path(configured_template)
@@ -1108,7 +1115,24 @@ def run_pipeline(
                         }
                     )
                     selected_template = None
-            else:
+            if format_config_path is not None:
+                try:
+                    from build_report_docx import resolve_format_authority
+
+                    selected_template, format_authority = resolve_format_authority(
+                        selected_template,
+                        format_config_path,
+                    )
+                except (FileNotFoundError, ValueError) as exc:
+                    blockers.append(
+                        {
+                            "stage": "S8_WORD_DELIVERY",
+                            "reason": "word_format_authority_invalid",
+                            "required_action": str(exc),
+                        }
+                    )
+                    selected_template = None
+            if selected_template is None:
                 blockers.append(
                     {
                         "stage": "S8_WORD_DELIVERY",
@@ -1125,6 +1149,7 @@ def run_pipeline(
                     "project_name": config["project"].get("official_name", ""),
                     "owner_name": config["project"].get("owner_name", ""),
                     "template_sha256": sha256_file(selected_template) if selected_template else "",
+                    "format_config_sha256": format_authority.get("_config_sha256", ""),
                     "delivery_validation_run_id": delivery_validation["validation_run_id"],
                     "validated_content_sha256": delivery_validation["content_sha256"],
                     "outline_version_id": delivery_assembly["outline_version_id"],
@@ -1156,6 +1181,7 @@ def run_pipeline(
                         mode="delivery",
                         database=database,
                         project_code=project_code,
+                        format_config=format_config_path,
                     )
                     docx_summary.update(
                         {

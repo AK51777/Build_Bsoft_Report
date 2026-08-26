@@ -191,6 +191,7 @@ class MedicalReportMCPTests(unittest.TestCase):
                 "database_path": str(self.database),
                 "scope_xlsx_path": str(self.xlsx),
                 "project_code": "TEST-001",
+                "package_id": "PACK-001",
             }
         )
 
@@ -249,7 +250,10 @@ class MedicalReportMCPTests(unittest.TestCase):
         self.assertFalse(result["validation"]["valid"])
         self.assertTrue(result["preview_only"])
 
-    def test_word_generation_uses_confirmed_format_authority_and_stays_non_delivery(self) -> None:
+    @patch("medical_report_mcp_server.validate_manifest")
+    def test_word_generation_uses_confirmed_format_authority_and_stays_non_delivery(
+        self, validate_manifest
+    ) -> None:
         template = self.root / "template.docx"
         document = Document()
         if "Body Text First Indent" not in {style.name for style in document.styles}:
@@ -287,9 +291,47 @@ class MedicalReportMCPTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        manifest = {
+            "project_code": "TEST-001",
+            "manifest_id": "MANIFEST-001",
+            "manifest_hash": "manifest-hash",
+            "package_id": "PACK-001",
+            "package_content_hash": "package-hash",
+            "status": "complete",
+            "preview_only": False,
+            "construction_list_import": {"display_payload": {"sheets": []}},
+            "application_software_solution": {
+                "items": [
+                    {
+                        "original_name": "主数据管理",
+                        "status": "verbatim",
+                        "fragments": [
+                            {
+                                "relative_heading_path": [],
+                                "clean_text": "标准方案正文。",
+                                "source_section_id": "SECTION-001",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        validation = {
+            "valid": True,
+            "manifest_id": "MANIFEST-001",
+            "manifest_hash": "manifest-hash",
+            "package_id": "PACK-001",
+            "package_content_hash": "package-hash",
+            "validation_hash": "validation-hash",
+        }
+        validate_manifest.return_value = validation
+        manifest_path = self.root / "construction-assembly-manifest.json"
+        validation_path = self.root / "construction-assembly-validation.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        validation_path.write_text(json.dumps(validation, ensure_ascii=False), encoding="utf-8")
         markdown = self.root / "solution.md"
         markdown.write_text(
-            "## 应用软件建设方案\n\n### 主数据管理\n\n标准方案正文。\n",
+            "## 软件建设清单\n\n\n## 应用软件建设方案\n\n### 主数据管理\n\n标准方案正文。\n",
             encoding="utf-8",
         )
         output = self.root / "solution.docx"
@@ -301,6 +343,10 @@ class MedicalReportMCPTests(unittest.TestCase):
                 "output_docx_path": str(output),
                 "project_name": "MCP测试项目",
                 "format_config_path": str(config),
+                "database_path": str(self.database),
+                "project_code": "TEST-001",
+                "assembly_manifest_path": str(manifest_path),
+                "assembly_validation_path": str(validation_path),
             }
         )
 
@@ -311,13 +357,32 @@ class MedicalReportMCPTests(unittest.TestCase):
         self.assertEqual(result["format_profile_id"], "PROFILE-MCP-TEST")
         self.assertTrue(result["fragment_wrapper_applied"])
         self.assertEqual(result["heading_levels"]["1"], 1)
-        self.assertEqual(result["heading_levels"]["2"], 1)
+        self.assertEqual(result["heading_levels"]["2"], 2)
         self.assertEqual(result["heading_levels"]["3"], 1)
         generated = Document(output)
         self.assertTrue(
             any(paragraph.text == "标准方案正文。" for paragraph in generated.paragraphs)
         )
         self.assertTrue(output.is_file())
+
+        markdown.write_text(
+            markdown.read_text(encoding="utf-8") + "\nAI自行补写。\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "exact output"):
+            self.server.word_generate(
+                {
+                    "project_root": str(self.root),
+                    "input_markdown_path": str(markdown),
+                    "output_docx_path": str(self.root / "tampered.docx"),
+                    "project_name": "MCP测试项目",
+                    "format_config_path": str(config),
+                    "database_path": str(self.database),
+                    "project_code": "TEST-001",
+                    "assembly_manifest_path": str(manifest_path),
+                    "assembly_validation_path": str(validation_path),
+                }
+            )
 
         blocked = self.server.dispatch(
             {

@@ -77,12 +77,12 @@ def policy_source_material(policy: dict[str, Any], clause: dict[str, Any], match
 
 def action_sentence(topic_tags: set[str]) -> str:
     if topic_tags.intersection({"data_security", "cybersecurity", "cryptography", "classified_protection"}):
-        return "编制时应在安全体系、数据保护和运维管理设计中落实对应防护要求，并以项目实际边界确定具体措施。"
+        return "本项目应在安全体系、数据保护和运维管理设计中落实对应防护要求，并以实际建设边界确定具体措施。"
     if topic_tags.intersection({"evaluation", "electronic_medical_record", "interoperability"}):
-        return "编制时应把评价对象、适用范围和测评边界转化为可核验的建设任务与指标，但不得提前表述为已经达标。"
+        return "本项目应把评价对象、适用范围和测评边界转化为可核验的建设任务与指标，评价目标不代表医院当前已经达标。"
     if topic_tags.intersection({"hospital_platform", "hospital_informationization", "infrastructure", "standardization"}):
-        return "编制时应在总体架构、平台整合、标准体系和建设内容之间建立对应关系，并保持与已确认建设范围一致。"
-    return "编制时应将该政策作为必要性和建设方向依据，并结合项目事实说明其适用边界。"
+        return "本项目应在总体架构、平台整合、标准体系和建设内容之间建立对应关系，并保持与已确认建设范围一致。"
+    return "本项目将该政策作为必要性和建设方向依据，并结合项目实际说明其适用边界。"
 
 
 def policy_paragraph(policy: dict[str, Any], materials: list[dict[str, Any]], topic_tags: set[str]) -> str:
@@ -110,7 +110,7 @@ def policy_paragraph(policy: dict[str, Any], materials: list[dict[str, Any]], to
         f"《{policy['title']}》{document_no}由{policy['issuer']}发布，围绕相关建设任务{action_text}。"
     ]
     if summary_text:
-        sentences.append(f"经核验的相关条款主要包括：{summary_text}。")
+        sentences.append(f"文件中与本项目相关的要求包括：{summary_text}。")
     topic_names = [TOPIC_LABELS[tag] for tag in sorted(topic_tags) if tag in TOPIC_LABELS]
     if topic_names:
         sentences.append(f"该文件与本项目的{'、'.join(topic_names[:5])}建设直接相关。")

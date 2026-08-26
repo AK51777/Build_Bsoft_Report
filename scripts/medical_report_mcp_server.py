@@ -38,7 +38,7 @@ from lint_docx_format import lint_docx
 
 
 SERVER_NAME = "medical-it-feasibility-local"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 LATEST_PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {
     "2024-11-05",
@@ -246,13 +246,15 @@ TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
-            "required": ["project_root", "database_path", "scope_xlsx_path", "project_code"],
+            "required": [
+                "project_root", "database_path", "scope_xlsx_path", "project_code", "package_id"
+            ],
             "properties": {
                 "project_root": {"type": "string"},
                 "database_path": {"type": "string"},
                 "scope_xlsx_path": {"type": "string"},
                 "project_code": {"type": "string", "minLength": 1},
-                "package_id": {"type": "string"},
+                "package_id": {"type": "string", "minLength": 1},
                 "output_dir": {"type": "string"},
                 "sheet_names": {"type": "array", "items": {"type": "string"}},
                 "header_row": {"type": "integer", "minimum": 1},
@@ -306,6 +308,10 @@ TOOLS: list[dict[str, Any]] = [
                 "output_docx_path",
                 "project_name",
                 "format_config_path",
+                "database_path",
+                "project_code",
+                "assembly_manifest_path",
+                "assembly_validation_path",
             ],
             "properties": {
                 "project_root": {"type": "string"},
@@ -322,6 +328,8 @@ TOOLS: list[dict[str, Any]] = [
                 "mode": {"type": "string", "enum": ["working", "delivery"]},
                 "database_path": {"type": "string"},
                 "project_code": {"type": "string"},
+                "assembly_manifest_path": {"type": "string"},
+                "assembly_validation_path": {"type": "string"},
                 "summary_path": {"type": "string"},
             },
             "additionalProperties": False,
@@ -368,8 +376,9 @@ class MedicalReportMCP:
         )
         output_dir = self.paths.output_dir(arguments.get("output_dir"), project_root, run_id)
         project_code = str(arguments.get("project_code") or "").strip()
-        if not project_code:
-            raise ValueError("project_code is required")
+        package_id = str(arguments.get("package_id") or "").strip()
+        if not project_code or not package_id:
+            raise ValueError("project_code and package_id are required")
         sheet_names = arguments.get("sheet_names")
         if sheet_names is not None and not isinstance(sheet_names, list):
             raise ValueError("sheet_names must be an array")
@@ -393,7 +402,7 @@ class MedicalReportMCP:
                 database,
                 project_code,
                 scope_snapshot_id=str(snapshot.get("scope_snapshot_id") or ""),
-                package_id=str(arguments.get("package_id") or ""),
+                package_id=package_id,
                 similar_threshold=float(arguments.get("similar_threshold", 0.6)),
             )
             match_json = output_dir / "construction-match-review.json"
@@ -482,6 +491,9 @@ class MedicalReportMCP:
             "run_id": run_id,
             "match_run_id": match_run_id,
             "manifest_id": manifest.get("manifest_id"),
+            "manifest_hash": manifest.get("manifest_hash"),
+            "package_id": manifest.get("package_id"),
+            "package_content_hash": manifest.get("package_content_hash"),
             "manifest_status": manifest.get("status"),
             "preview_only": bool(manifest.get("preview_only")),
             "decision_result": {
@@ -530,6 +542,7 @@ class MedicalReportMCP:
         if not project_name:
             raise ValueError("project_name is required")
         markdown = markdown_path.read_text(encoding="utf-8-sig")
+        assembly_markdown = markdown
         markdown_mode = str(arguments.get("markdown_mode") or "auto")
         if markdown_mode not in {"auto", "full_report", "fragment"}:
             raise ValueError("markdown_mode must be auto, full_report or fragment")
@@ -552,17 +565,47 @@ class MedicalReportMCP:
         if mode not in {"working", "delivery"}:
             raise ValueError("mode must be working or delivery")
 
-        database: Path | None = None
+        database = self.paths.input_file(
+            arguments.get("database_path"), project_root, "database_path", (".sqlite", ".db")
+        )
         project_code = str(arguments.get("project_code") or "").strip()
-        if arguments.get("database_path"):
-            database = self.paths.input_file(
-                arguments.get("database_path"),
-                project_root,
-                "database_path",
-                (".sqlite", ".db"),
-            )
-        if mode == "delivery" and (database is None or not project_code):
-            raise ValueError("delivery mode requires database_path and project_code")
+        if not project_code:
+            raise ValueError("project_code is required")
+        manifest_path = self.paths.input_file(
+            arguments.get("assembly_manifest_path"),
+            project_root,
+            "assembly_manifest_path",
+            (".json",),
+        )
+        validation_path = self.paths.input_file(
+            arguments.get("assembly_validation_path"),
+            project_root,
+            "assembly_validation_path",
+            (".json",),
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        recorded_validation = json.loads(validation_path.read_text(encoding="utf-8-sig"))
+        if manifest.get("project_code") != project_code:
+            raise ValueError("assembly manifest project_code does not match Word request")
+        if manifest.get("preview_only") or manifest.get("status") == "blocked":
+            raise ValueError("blocked or preview-only assembly cannot enter Word generation")
+        expected_markdown = (
+            render_scope_fragment(manifest) + "\n\n" + render_solution_fragment(manifest)
+        )
+        if assembly_markdown.strip() != expected_markdown.strip():
+            raise ValueError("input markdown is not the exact output of the bound assembly manifest")
+        live_validation = validate_manifest(database, manifest)
+        if not recorded_validation.get("valid") or not live_validation.get("valid"):
+            raise ValueError("assembly validation is blocked or stale; rerun assembly validation")
+        binding_fields = ("manifest_id", "manifest_hash", "package_id", "package_content_hash")
+        if any(
+            recorded_validation.get(field) != manifest.get(field)
+            or live_validation.get(field) != manifest.get(field)
+            for field in binding_fields
+        ):
+            raise ValueError("assembly manifest, validation and package bindings do not match")
+        if recorded_validation.get("validation_hash") != live_validation.get("validation_hash"):
+            raise ValueError("assembly validation file is stale or has been modified")
 
         template, authority = resolve_format_authority(None, format_config)
         if template is None:
@@ -613,6 +656,9 @@ class MedicalReportMCP:
             "format_profile_id": summary.get("format_profile_id"),
             "template_sha256": summary.get("template_sha256"),
             "format_config_sha256": summary.get("format_config_sha256"),
+            "assembly_manifest_id": manifest.get("manifest_id"),
+            "assembly_manifest_hash": manifest.get("manifest_hash"),
+            "assembly_validation_hash": live_validation.get("validation_hash"),
             "heading_levels": summary.get("heading_levels", {}),
             "numbered_heading_levels": summary.get("numbered_heading_levels", []),
             "markdown_residue": residue,

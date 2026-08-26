@@ -25,6 +25,7 @@ from knowledge_db import (
     sha256_text,
     stable_id,
 )
+from standard_solution_coverage import require_complete_standard_solution_coverage
 
 
 MATCHER_VERSION = "construction-module-subtree-v2"
@@ -42,6 +43,13 @@ def _json(value: Any, default: Any) -> Any:
     try:
         return json.loads(str(value))
     except (TypeError, ValueError, json.JSONDecodeError):
+        return default
+
+
+def _int(value: Any, default: int = -1) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
         return default
 
 
@@ -251,7 +259,7 @@ def _allowed_snapshot_items(
         return set(), set(), ""
     snapshot = conn.execute(
         """
-        SELECT snapshot_id,content_hash FROM shared_knowledge_snapshot
+        SELECT snapshot_id,content_hash,metadata_json FROM shared_knowledge_snapshot
         WHERE project_id=? AND source_type='knowledge_package' AND source_id=?
           AND snapshot_status='current'
         ORDER BY fetched_at DESC LIMIT 1
@@ -260,6 +268,10 @@ def _allowed_snapshot_items(
     ).fetchone()
     if snapshot is None:
         raise ValueError(f"current local snapshot for package not found: {package_id}")
+    metadata = _json(snapshot["metadata_json"], {})
+    require_complete_standard_solution_coverage(
+        metadata, context=f"项目本地标准知识快照 {package_id}"
+    )
     rows = conn.execute(
         """
         SELECT item_type,item_id FROM shared_knowledge_snapshot_item
@@ -880,16 +892,25 @@ def _solution_item_markdown(item: dict[str, Any], heading_level: int = 3) -> lis
     if item["status"] == "pending_confirmation":
         return lines + [PENDING_CONFIRMATION_MARKER, ""]
     last_relative: list[str] = []
+    last_source_section_id = ""
     for fragment in item["fragments"]:
         relative = fragment["relative_heading_path"]
         common = 0
         while common < min(len(last_relative), len(relative)) and last_relative[common] == relative[common]:
             common += 1
+        if (
+            relative
+            and fragment.get("source_section_id")
+            and fragment.get("source_section_id") != last_source_section_id
+            and relative == last_relative
+        ):
+            common = len(relative) - 1
         for index in range(common, len(relative)):
             level = min(6, heading_level + 1 + index)
             lines.extend([f"{'#' * level} {relative[index]}", ""])
         lines.extend([fragment["clean_text"], ""])
         last_relative = relative
+        last_source_section_id = str(fragment.get("source_section_id") or "")
     return lines
 
 
@@ -921,6 +942,11 @@ def assemble(
         ).fetchone()
         if run is None or run["status"] == "superseded":
             raise ValueError("active match run not found")
+        allowed_capability_ids, allowed_block_ids, package_content_hash = _allowed_snapshot_items(
+            conn, project["project_id"], run["package_id"]
+        )
+        if package_content_hash != run["package_content_hash"]:
+            raise ValueError("standard package snapshot changed after matching; rerun match and review")
         snapshot = dict(
             conn.execute(
                 "SELECT * FROM construction_scope_snapshot WHERE scope_snapshot_id=?",
@@ -997,6 +1023,8 @@ def assemble(
                     (decision["chosen_capability_id"],),
                 ).fetchone()
             )
+            if allowed_capability_ids and capability["capability_id"] not in allowed_capability_ids:
+                raise ValueError(f"chosen capability is outside the frozen package: {capability['capability_id']}")
             root = _json(decision["chosen_root_heading_path_json"], [])
             chosen_ids = _json(decision["chosen_block_ids_json"], [])
             placeholders = ",".join("?" for _ in chosen_ids)
@@ -1010,11 +1038,13 @@ def assemble(
             for block in selected_blocks:
                 block["heading_path"] = _json(block.get("heading_path_json"), [])
             selected_blocks.sort(key=_block_order)
+            if allowed_block_ids and not set(chosen_ids).issubset(allowed_block_ids):
+                raise ValueError(f"chosen subtree contains blocks outside the frozen package: {scope_row['original_name']}")
             if [block["block_id"] for block in selected_blocks] != chosen_ids:
                 raise ValueError(f"chosen subtree block order/content changed for {scope_row['original_name']}")
             if not selected_blocks or any(not _is_prefix(root, block["heading_path"]) for block in selected_blocks):
                 raise ValueError(f"chosen blocks are not one complete heading subtree: {scope_row['original_name']}")
-            all_blocks = _load_blocks(conn)
+            all_blocks = _load_blocks(conn, allowed_block_ids if allowed_block_ids else None)
             document_ids = {block["corpus_document_id"] for block in selected_blocks}
             expected = [
                 block for block in all_blocks
@@ -1030,6 +1060,10 @@ def assemble(
                 fragments.append(
                     {
                         "block_id": block["block_id"],
+                        "source_section_id": block.get("source_section_id", ""),
+                        "source_order": int(block.get("source_order", 0)),
+                        "chunk_index": int(block.get("chunk_index", 0)),
+                        "source_is_heading": bool(block.get("source_is_heading", False)),
                         "heading_path": block["heading_path"],
                         "relative_heading_path": block["heading_path"][len(root):],
                         "clean_text": block["clean_text"],
@@ -1147,8 +1181,70 @@ def assemble(
 
 def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
+    manifest_core = {
+        key: value
+        for key, value in manifest.items()
+        if key not in {"manifest_id", "manifest_hash", "status"}
+    }
+    calculated_manifest_hash = _canonical_hash(manifest_core)
+    if calculated_manifest_hash != manifest.get("manifest_hash"):
+        issues.append({"code": "manifest_hash_mismatch", "blocking": True})
+    calculated_manifest_id = stable_id(
+        "CONSTRUCTIONMANIFEST", manifest.get("match_run_id"), calculated_manifest_hash
+    )
+    if calculated_manifest_id != manifest.get("manifest_id"):
+        issues.append({"code": "manifest_id_mismatch", "blocking": True})
     with connect(database.resolve()) as conn:
         apply_migrations(conn)
+        project = conn.execute(
+            "SELECT project_id FROM project WHERE project_code=?", (manifest.get("project_code"),)
+        ).fetchone()
+        run = conn.execute(
+            "SELECT * FROM construction_match_run WHERE match_run_id=?",
+            (manifest.get("match_run_id"),),
+        ).fetchone()
+        allowed_block_ids: set[str] | None = None
+        if project is None:
+            issues.append({"code": "project_missing", "blocking": True})
+        if run is None:
+            issues.append({"code": "match_run_missing", "blocking": True})
+        else:
+            if project is not None and run["project_id"] != project["project_id"]:
+                issues.append({"code": "match_run_project_mismatch", "blocking": True})
+            if run["scope_snapshot_id"] != manifest.get("scope_snapshot_id"):
+                issues.append({"code": "match_run_scope_snapshot_mismatch", "blocking": True})
+            if run["package_id"] != manifest.get("package_id"):
+                issues.append({"code": "match_run_package_mismatch", "blocking": True})
+            if run["package_content_hash"] != manifest.get("package_content_hash"):
+                issues.append({"code": "match_run_package_hash_mismatch", "blocking": True})
+            if project is not None:
+                try:
+                    _, frozen_block_ids, current_package_hash = _allowed_snapshot_items(
+                        conn, project["project_id"], run["package_id"]
+                    )
+                    allowed_block_ids = frozen_block_ids if frozen_block_ids else None
+                    if current_package_hash != run["package_content_hash"]:
+                        issues.append({"code": "package_snapshot_changed", "blocking": True})
+                except ValueError as exc:
+                    issues.append(
+                        {
+                            "code": "standard_knowledge_coverage_invalid",
+                            "blocking": True,
+                            "detail": str(exc),
+                        }
+                    )
+        if not manifest.get("preview_only") and manifest.get("manifest_id"):
+            persisted = conn.execute(
+                "SELECT manifest_hash,manifest_json FROM construction_assembly_manifest WHERE manifest_id=?",
+                (manifest.get("manifest_id"),),
+            ).fetchone()
+            if persisted is None:
+                issues.append({"code": "persisted_manifest_missing", "blocking": True})
+            elif (
+                persisted["manifest_hash"] != manifest.get("manifest_hash")
+                or _json(persisted["manifest_json"], {}) != manifest
+            ):
+                issues.append({"code": "persisted_manifest_mismatch", "blocking": True})
         snapshot = conn.execute(
             "SELECT * FROM construction_scope_snapshot WHERE scope_snapshot_id=?",
             (manifest.get("scope_snapshot_id"),),
@@ -1159,44 +1255,151 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
             payload = _json(snapshot["display_payload_json"], {})
             if _canonical_hash(payload) != manifest.get("scope_snapshot_hash"):
                 issues.append({"code": "scope_snapshot_hash_mismatch", "blocking": True})
+            manifest_scope = manifest.get("construction_list_import", {})
+            if payload != manifest_scope.get("display_payload"):
+                issues.append({"code": "scope_display_payload_mismatch", "blocking": True})
+            if (
+                snapshot["source_path"] != manifest_scope.get("source_path")
+                or snapshot["source_sha256"] != manifest_scope.get("source_sha256")
+            ):
+                issues.append({"code": "scope_source_binding_mismatch", "blocking": True})
         items = manifest.get("application_software_solution", {}).get("items", [])
         if manifest.get("status") == "blocked" or manifest.get("preview_only"):
             issues.append({"code": "unresolved_working_preview", "blocking": True})
-        orders = [item.get("source_ordinal") for item in items]
+        orders = [_int(item.get("source_ordinal")) for item in items]
         if orders != sorted(orders) or len(orders) != len(set(orders)):
             issues.append({"code": "customer_order_not_preserved", "blocking": True})
         for item in items:
+            scope_row = conn.execute(
+                """
+                SELECT csr.source_ordinal,csr.scope_row_id,psi.scope_id,psi.original_name
+                FROM construction_scope_row AS csr
+                JOIN project_scope_item AS psi ON psi.scope_id=csr.scope_id
+                WHERE csr.scope_snapshot_id=? AND csr.scope_row_id=?
+                """,
+                (manifest.get("scope_snapshot_id"), item.get("scope_row_id")),
+            ).fetchone()
+            if (
+                scope_row is None
+                or _int(scope_row["source_ordinal"]) != _int(item.get("source_ordinal"))
+                or scope_row["scope_id"] != item.get("scope_id")
+                or scope_row["original_name"] != item.get("original_name")
+            ):
+                issues.append(
+                    {
+                        "code": "scope_item_binding_mismatch",
+                        "blocking": True,
+                        "item": item.get("original_name"),
+                    }
+                )
             if item.get("status") == "pending_supplement":
                 if item.get("fragments") or item.get("block_ids"):
                     issues.append({"code": "gap_contains_standard_content", "blocking": True, "item": item.get("original_name")})
+                if item.get("content_hash") != sha256_text(PENDING_MARKER):
+                    issues.append({"code": "gap_content_hash_mismatch", "blocking": True, "item": item.get("original_name")})
                 continue
             if item.get("status") == "pending_confirmation":
                 if item.get("fragments") or item.get("block_ids"):
                     issues.append({"code": "pending_confirmation_contains_standard_content", "blocking": True, "item": item.get("original_name")})
+                if item.get("content_hash") != sha256_text(PENDING_CONFIRMATION_MARKER):
+                    issues.append({"code": "pending_confirmation_hash_mismatch", "blocking": True, "item": item.get("original_name")})
                 continue
             ids = item.get("block_ids", [])
             fragments = item.get("fragments", [])
             if ids != [fragment.get("block_id") for fragment in fragments]:
                 issues.append({"code": "fragment_order_mismatch", "blocking": True, "item": item.get("original_name")})
+            expected_content_hash = _canonical_hash(
+                [
+                    {"block_id": fragment.get("block_id"), "text_hash": fragment.get("text_hash")}
+                    for fragment in fragments
+                ]
+            )
+            if expected_content_hash != item.get("content_hash"):
+                issues.append({"code": "item_content_hash_mismatch", "blocking": True, "item": item.get("original_name")})
+            root = item.get("root_heading_path", [])
             for fragment in fragments:
                 row = conn.execute(
-                    "SELECT clean_text,text_hash FROM corpus_block WHERE block_id=?",
+                    """SELECT clean_text,text_hash,source_section_id,source_order,chunk_index,
+                              source_is_heading,source_location,heading_path_json,content_format,
+                              content_payload_json,asset_manifest_json,visible_text_hash
+                       FROM corpus_block WHERE block_id=?""",
                     (fragment.get("block_id"),),
                 ).fetchone()
-                if row is None or row["clean_text"] != fragment.get("clean_text") or row["text_hash"] != fragment.get("text_hash"):
+                row_heading_path = _json(row["heading_path_json"], []) if row is not None else []
+                metadata_mismatch = row is not None and (
+                    row_heading_path != fragment.get("heading_path", [])
+                    or not _is_prefix(root, row_heading_path)
+                    or row_heading_path[len(root):] != fragment.get("relative_heading_path", [])
+                    or row["source_location"] != fragment.get("source_location", "")
+                    or row["content_format"] != fragment.get("content_format", "plain_text")
+                    or _json(row["content_payload_json"], {}) != fragment.get("content_payload", {})
+                    or _json(row["asset_manifest_json"], []) != fragment.get("asset_manifest", [])
+                    or (row["visible_text_hash"] or row["text_hash"])
+                    != fragment.get("visible_text_hash", fragment.get("text_hash"))
+                )
+                if (
+                    row is None
+                    or row["clean_text"] != fragment.get("clean_text")
+                    or row["text_hash"] != fragment.get("text_hash")
+                    or row["source_section_id"] != fragment.get("source_section_id", "")
+                    or _int(row["source_order"]) != _int(fragment.get("source_order"))
+                    or _int(row["chunk_index"]) != _int(fragment.get("chunk_index"))
+                    or bool(row["source_is_heading"])
+                    != bool(fragment.get("source_is_heading", False))
+                ):
                     issues.append({"code": "standard_text_not_verbatim", "blocking": True, "block_id": fragment.get("block_id")})
+                if metadata_mismatch:
+                    issues.append({"code": "standard_fragment_metadata_mismatch", "blocking": True, "block_id": fragment.get("block_id")})
+            if ids:
+                block_rows = []
+                for block_id in ids:
+                    row = conn.execute(
+                        "SELECT rowid AS local_rowid,* FROM corpus_block WHERE block_id=?",
+                        (block_id,),
+                    ).fetchone()
+                    if row is not None:
+                        block = dict(row)
+                        block["heading_path"] = _json(block.get("heading_path_json"), [])
+                        block_rows.append(block)
+                document_ids = {block["corpus_document_id"] for block in block_rows}
+                all_blocks = _load_blocks(conn, allowed_block_ids)
+                expected = [
+                    block
+                    for block in all_blocks
+                    if block["corpus_document_id"] in document_ids
+                    and _is_prefix(root, block["heading_path"])
+                ]
+                expected.sort(key=_block_order)
+                if [block["block_id"] for block in expected] != ids:
+                    issues.append(
+                        {
+                            "code": "standard_subtree_incomplete",
+                            "blocking": True,
+                            "item": item.get("original_name"),
+                        }
+                    )
     blocking = sum(1 for issue in issues if issue.get("blocking"))
-    return {
+    result = {
         "valid": blocking == 0,
         "blocking_issue_count": blocking,
+        "manifest_id": manifest.get("manifest_id", ""),
+        "manifest_hash": manifest.get("manifest_hash", ""),
+        "calculated_manifest_hash": calculated_manifest_hash,
+        "calculated_manifest_id": calculated_manifest_id,
+        "package_id": manifest.get("package_id", ""),
+        "package_content_hash": manifest.get("package_content_hash", ""),
         "issues": issues,
         "checks": [
             "scope display snapshot hash",
+            "manifest hash and persisted manifest binding",
+            "match run and complete standard package snapshot binding",
             "customer source order",
             "explicit pending supplement gaps",
-            "block order and verbatim text/hash equality",
+            "complete subtree, block order and verbatim text/hash equality",
         ],
     }
+    result["validation_hash"] = _canonical_hash(result)
+    return result
 
 
 def main() -> int:

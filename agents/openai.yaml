@@ -1,4 +1,4 @@
 interface:
   display_name: "医疗信息化可研生成"
-  short_description: "自动接入共享知识、映射建设清单并生成完整可追溯可研"
-  default_prompt: "使用 $build-medical-it-feasibility-report 同步受审知识，从客户清单生成完整候选目录并显式确认，对精确映射能力按原顺序全量装配标准方案，再按确认版目录生成和校验可追溯可研。"
+  short_description: "接入受审知识，按确认目录逐章生成并校验可追溯可研"
+  default_prompt: "使用 $build-medical-it-feasibility-report 同步受审知识、确认目录，并按章节任务包逐章生成、校验和采纳医疗信息化可研。"

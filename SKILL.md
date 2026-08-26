@@ -35,11 +35,14 @@ description: Create evidence-based Chinese government-investment medical informa
 - 建库、迁移或解释数据对象时，读取 `references/knowledge-base-schema.md`。
 - 解析 profile、诊断服务器、选择知识包、同步或验证快照时，读取 `references/knowledge-connection-rules.md`。
 - 处理客户清单、公司能力清单或投资对应关系时，读取 `references/scope-mapping-rules.md`。
+- 从公司标准 Word 构建、发布或同步标准知识包时，读取 `references/reference-corpus-cleaning-rules.md` 的标准方案专用规则；标准方案执行完整导入，不得套用参考语料的最短字数过滤或去重规则。
 - 对照客户与公司模块清单、发起相似/缺失核对或完整装配标准建设方案时，读取 `references/construction-alignment-rules.md`；该链路不得交给通用语料改写器处理。
 - 需要让其他 AI 通过本机 MCP 只调用清单对照、人工确认装配和 Word 生成时，读取 `references/mcp-service-rules.md`；MCP 只作为现有确定性脚本的本机适配层，不得在接口层改写标准正文或绕过门禁。
 - 使用外地可研、历史方案或厂商方案时，读取 `references/reference-reuse-rules.md`。
+- 清洗参考可研、区分标准方案与可研论证语料或发布参考语料时，读取 `references/reference-corpus-cleaning-rules.md`。
 - 将高质量方案拆为语料块、映射产品能力或形成章节组合计划时，读取 `references/corpus-reuse-rules.md`。
 - 形成目录、任务包或逐章编写时，读取 `references/chapter-task-rules.md` 和 `references/medical-it-feasibility-writing.md`。
+- 按章节完善生成规则、建立脱敏问题卡或执行增量回归时，读取 `references/chapter-development-rules.md`。
 - 复核正文或交付稿时，读取 `references/validation-rules.md`。
 - 合并或排版 Word 时，读取 `references/word-delivery-rules.md`，并遵守当前环境的文档处理技能和渲染验证要求。
 
@@ -64,6 +67,8 @@ description: Create evidence-based Chinese government-investment medical informa
 每一阶段都必须有进入条件、标准产物、检查和门禁。详细规则见 `references/workflow.md`。
 
 阶段0同时产生文档类型和格式画像候选；阶段1同时产生推断台账、事实核验包和确认记录；阶段5开始必须用章节组合计划约束事实、政策、范围、语料和篇幅。AI推荐不等于用户确认。
+
+单章生成或规则修订默认使用 `--chapter`，只读取、生成和校验目标章节；章节通过后再运行同章节类型回归。只有公共红线、数据库结构、目录签名、全文组装发生变化或准备发布时才运行全量回归和Word链路。
 
 ## 强制事实规则
 
@@ -112,6 +117,9 @@ python scripts/inventory_sources.py <paths...> --output 01-资料清单.json
 python scripts/classify_source_roles.py source-inventory.json [--overrides source-role-overrides.json] --output source-role-register.json
 python scripts/extract_docx_structure.py <report.docx> --output docx-structure.json
 python scripts/extract_clean_document_blocks.py <source.docx|source.md|source.txt> --project-code <project-code> --output clean-document-blocks.json
+python scripts/build_reference_corpus_workpack.py clean-document-blocks.json --project-type smart_hospital --output-json reference-corpus-workpack.json --output-md reference-corpus-workpack.md
+python scripts/build_reference_corpus_review_pack.py reference-corpus-workpack.json --semantic-section overall_objective_scope --output-json reference-review.json --output-md reference-review.md
+python scripts/build_reference_knowledge_pack.py reference-corpus-workpack.json reference-review.json --version <version> --output <private-reference-pack.json>
 python scripts/ingest_clean_documents_sqlite.py <knowledge.sqlite> <clean-document-blocks.json> --output sqlite-ingest-result.json
 python scripts/build_candidate_fact_workpack.py <knowledge.sqlite> <project-code> --output candidate-fact-workpack.json
 python scripts/build_reference_reuse_workpack.py <knowledge.sqlite> <project-code> --output-json reference-reuse-workpack.json --output-md 07-参考方案复用地图.md
@@ -125,12 +133,13 @@ python scripts/construction_alignment.py assemble <knowledge.sqlite> <project-co
 python scripts/construction_alignment.py validate <knowledge.sqlite> <construction-assembly-manifest.json> --output construction-assembly-validation.json
 python scripts/medical_report_mcp_server.py --config <local-medical-report-mcp.json> --check-config  # 去掉--check-config后作为stdio MCP启动；规则见references/mcp-service-rules.md
 python scripts/build_scope_baseline.py <knowledge.sqlite> <project-code> --output scope-baseline.json
+python scripts/apply_scope_item_decisions.py <knowledge.sqlite> <scope-decisions.json> --output scope-decision-apply.json
 python scripts/confirm_scope_baseline.py <knowledge.sqlite> <project-code> <baseline-id> --confirmed-by <name> --confirmed-at <time> --output scope-baseline-confirmation.json
 python scripts/build_traceability_matrix.py <knowledge.sqlite> <project-code> --links traceability-links.json --output-json traceability-matrix.json --output-csv traceability-matrix.csv
 python scripts/ingest_product_capabilities.py <knowledge.sqlite> <product-capabilities.json> --output capability-ingest-result.json
 python scripts/map_scope_capabilities.py <knowledge.sqlite> <project-code> --output scope-capability-map.json
 python scripts/build_standard_knowledge_pack.py <company-standard.docx> <company-scope.xlsx> --output <local-private-pack.json>
-python scripts/import_standard_knowledge_pack.py <knowledge.sqlite> <local-private-pack.json> --output standard-pack-import.json
+python scripts/import_standard_knowledge_pack.py <knowledge.sqlite> <local-private-standard-or-reference-pack.json> --output knowledge-pack-import.json
 python scripts/build_policy_catalog.py <department-policy-index.xlsx> --output <reviewed-policy-catalog.json>
 python scripts/import_policy_catalog_sqlite.py <knowledge.sqlite> <reviewed-policy-catalog.json> --output policy-catalog-import.json
 python scripts/match_policy_catalog_candidates.py <knowledge.sqlite> <project-code> --topic <topic> --output-json policy-catalog-candidates.json --output-md policy-catalog-candidates.md
@@ -142,15 +151,16 @@ MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/import_verified_polici
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/sync_postgres_knowledge_snapshot.py <knowledge.sqlite> <project-code> --package-id <package-id> --catalog-id <catalog-id> --policy-topic <topic> --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output snapshot-sync.json
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/query_postgres_knowledge.py package --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output published-packages.json
 python scripts/apply_scope_capability_decisions.py <knowledge.sqlite> <mapping-decisions.json> --output mapping-apply-result.json
-python scripts/build_section_composition_plan.py <knowledge.sqlite> <project-code> --output section-composition-plan.json
+python scripts/build_section_composition_plan.py <knowledge.sqlite> <project-code> [--chapter <chapter-code>] --output section-composition-plan.json
 python scripts/build_report_outline.py <knowledge.sqlite> <project-code> --output-json outline-candidate.json --output-md outline-candidate.md
 python scripts/confirm_report_outline.py <knowledge.sqlite> <project-code> <outline-version-id> --confirmed-by <name> [--candidate-json outline-reviewed.json] --output-json outline-confirmation.json
-python scripts/export_section_task_packages.py <knowledge.sqlite> <project-code> <10-章节任务包> --output task-package-export.json
+python scripts/export_section_task_packages.py <knowledge.sqlite> <project-code> <10-章节任务包> [--chapter <chapter-code>] --output task-package-export.json
 python scripts/build_policy_section_material.py <knowledge.sqlite> <project-code> --mode working --output-json policy-section-material.json --output-md policy-section-material.md
-python scripts/build_evidence_bound_initial_drafts.py <knowledge.sqlite> <project-code> <10-章节任务包> <11-正文工作稿> --output evidence-bound-drafts.json
+python scripts/build_evidence_bound_initial_drafts.py <knowledge.sqlite> <project-code> <10-章节任务包> <11-正文工作稿> [--chapter <chapter-code>] --output evidence-bound-drafts.json
 python scripts/save_section_draft.py <knowledge.sqlite> <project-code> <chapter-code> <draft.md> <chapter-package.json> --model <model> --prompt-version <version> --output draft-save-result.json
 python scripts/validate_section_draft.py <knowledge.sqlite> <project-code> <chapter-code> <version-no> --output section-validation.json
 python scripts/manage_section_draft.py <knowledge.sqlite> <project-code> <chapter-code> <version-no> <adopt|discard|restore> --output draft-action-result.json
+python scripts/run_chapter_regression.py <chapter-code> --tier <chapter|family|full> [--dry-run] --output chapter-regression.json
 python scripts/assemble_report_markdown.py <knowledge.sqlite> <project-code> --mode <working|delivery> --output report.md --summary assembly-summary.json
 python scripts/validate_full_report.py <knowledge.sqlite> <project-code> --mode <working|delivery> --residual-terms <参考残留词表.txt> --output validation-result.json
 python scripts/build_report_docx.py <report.md> <report.docx> --project-name <name> --owner-name <owner> --mode delivery --database <knowledge.sqlite> --project-code <project-code> --template <confirmed-template.docx> --summary docx-build-summary.json

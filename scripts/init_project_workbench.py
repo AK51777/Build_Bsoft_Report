@@ -24,9 +24,15 @@ DOCUMENT_TYPE_ALIASES = {
 }
 PROJECT_TYPE_ALIASES = {
     "hospital_informationization": "hospital_informationization",
+    "smart_hospital": "smart_hospital",
     "医院信息化": "hospital_informationization",
     "医疗信息化": "hospital_informationization",
     "医院信息化建设": "hospital_informationization",
+    "智慧医院": "smart_hospital",
+    "medical_consortium": "medical_consortium",
+    "医共体": "medical_consortium",
+    "regional_health_platform": "regional_health_platform",
+    "全民健康信息平台": "regional_health_platform",
 }
 
 DATA_DIRECTORIES = (
@@ -300,6 +306,7 @@ def initialize_project(
         },
         "delivery": {
             "word_template": "",
+            "word_format_config": "",
             "require_render_review": True,
         },
         "knowledge": {

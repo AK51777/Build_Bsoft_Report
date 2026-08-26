@@ -15,6 +15,10 @@ SCRIPTS = SKILL_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from build_standard_knowledge_pack import build_pack  # noqa: E402
+from apply_scope_capability_decisions import apply_decisions as apply_mapping_decisions  # noqa: E402
+from apply_scope_item_decisions import apply_scope_item_decisions  # noqa: E402
+from build_scope_baseline import build_scope_baseline  # noqa: E402
+from confirm_scope_baseline import confirm_scope_baseline  # noqa: E402
 from knowledge_db import sha256_file, sha256_text  # noqa: E402
 from postgres_knowledge_db import canonical_json  # noqa: E402
 from run_project_pipeline import run_pipeline  # noqa: E402
@@ -61,7 +65,7 @@ def make_project_scope(path: Path) -> None:
 
 
 class LocalV1EndToEndTests(unittest.TestCase):
-    def test_new_project_uses_company_pack_to_generate_construction_chapter_and_full_working_report(self) -> None:
+    def test_candidate_requires_one_human_review_before_standard_content_enters_construction_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pack_path = make_company_knowledge(root)
@@ -106,6 +110,7 @@ class LocalV1EndToEndTests(unittest.TestCase):
             self.assertEqual(coverage["scope_node_count"], 1)
             self.assertEqual(coverage["mapped_scope_count"], 1)
             self.assertGreater(coverage["standard_block_count"], 0)
+            self.assertEqual(coverage["confirmed_capability_count"], 0)
             self.assertGreater(result["draft_generation"]["total_visible_length"], 20000)
             self.assertEqual(
                 result["draft_generation"]["working_draft_adopted_count"],
@@ -114,11 +119,18 @@ class LocalV1EndToEndTests(unittest.TestCase):
             self.assertEqual(result["draft_generation"]["formal_delivery_adopted_count"], 0)
             self.assertIn("working-report assembly only", result["draft_generation"]["adoption_notice"])
 
+            review_path = project / "数据包" / "结构化数据" / "scope-capability-candidates.json"
+            review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(review_payload["candidates"]), 1)
+            candidate = review_payload["candidates"][0]
+            self.assertEqual(candidate["status"], "candidate")
+            self.assertEqual(candidate["match_basis"], "exact_product")
+
             report = (project / "11-正文工作稿" / "report-working.md").read_text(encoding="utf-8")
             self.assertIn("第5章 建设内容", report)
             self.assertIn("电子病历系统", report)
-            self.assertIn("质控反馈和整改闭环", report)
-            self.assertIn("建设内容总表", report)
+            self.assertNotIn("质控反馈和整改闭环", report)
+            self.assertNotIn("建设内容总表", report)
             self.assertIn("【工作稿】章节“采纳”仅表示已选入本轮工作稿组装", report)
 
             construction_packages = sorted((project / "10-章节任务包").glob("CH5.1.1-*.json"))
@@ -129,6 +141,61 @@ class LocalV1EndToEndTests(unittest.TestCase):
             ]
             self.assertEqual(corpus_sources, coverage["block_ids"])
             self.assertTrue((project / "数据包" / "结构化数据" / "construction-knowledge-coverage.json").is_file())
+
+            decision_result = apply_mapping_decisions(
+                Path(result["database"]),
+                {
+                    "project_code": "LOCAL-V1-E2E",
+                    "reviewed_by": "human-reviewer",
+                    "reviewed_at": "2026-08-26T12:00:00+08:00",
+                    "decisions": [
+                        {
+                            "map_id": candidate["map_id"],
+                            "decision": "confirmed",
+                            "review_note": "人工确认电子病历系统对应公司标准能力。",
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(decision_result["updated"], 1)
+
+            baseline_payload = json.loads(
+                (project / "数据包" / "结构化数据" / "scope-baseline.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            scope_decision_result = apply_scope_item_decisions(
+                Path(result["database"]),
+                {
+                    "project_code": "LOCAL-V1-E2E",
+                    "baseline_id": baseline_payload["baseline_id"],
+                    "expected_content_hash": baseline_payload["content_hash"],
+                    "confirmed_by": "human-reviewer",
+                    "confirmed_at": "2026-08-26T12:00:00+08:00",
+                    "decisions": [
+                        {
+                            "scope_id": candidate["scope_id"],
+                            "decision": "include",
+                            "construction_mode": "upgrade",
+                            "decision_note": "同一轮人工核对确认该清单项属于本期建设范围。",
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(scope_decision_result["applied"], 1)
+            confirmed_baseline = build_scope_baseline(
+                Path(result["database"]), "LOCAL-V1-E2E"
+            )
+            self.assertEqual(confirmed_baseline["counts"]["pending"], 0)
+            baseline_confirmation = confirm_scope_baseline(
+                Path(result["database"]),
+                "LOCAL-V1-E2E",
+                confirmed_baseline["baseline_id"],
+                confirmed_by="human-reviewer",
+                confirmed_at="2026-08-26T12:00:00+08:00",
+                decision_note="同一轮人工核对确认客户范围和标准能力对应关系。",
+            )
+            self.assertEqual(baseline_confirmation["status"], "confirmed")
 
             rerun = run_pipeline(
                 project,
@@ -143,6 +210,19 @@ class LocalV1EndToEndTests(unittest.TestCase):
             self.assertEqual(rerun_manifest["content_hashes"], manifest["content_hashes"])
             self.assertEqual(rerun_manifest["counts"], manifest["counts"])
             self.assertEqual(rerun_manifest["counts"]["policy_clauses"], 0)
+            confirmed_coverage = rerun["construction_knowledge_coverage"]
+            self.assertEqual(confirmed_coverage["confirmed_capability_count"], 1)
+            self.assertEqual(
+                confirmed_coverage["full_block_coverage_ratio"], 1.0, confirmed_coverage
+            )
+            construction_draft = next(
+                item
+                for item in rerun["draft_generation"]["sections"]
+                if item["chapter_code"] == "5.1.1"
+            )
+            confirmed_draft = Path(construction_draft["draft"]).read_text(encoding="utf-8")
+            self.assertIn("建设内容总表", confirmed_draft)
+            self.assertIn("质控反馈和整改闭环", confirmed_draft)
 
 
 if __name__ == "__main__":

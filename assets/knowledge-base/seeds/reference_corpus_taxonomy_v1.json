@@ -1,0 +1,256 @@
+{
+  "schema_version": "1.0",
+  "source_corpus_types": {
+    "standard_solution": "公司标准建设方案，服务于清单—能力—建设方案全量组装",
+    "reference_feasibility": "高质量参考可研，服务于可研结构和论证语料复用",
+    "generic_reference": "不依附单一文种的通用受审材料",
+    "legacy_unspecified": "历史数据待重新分类"
+  },
+  "content_types": {
+    "construction_solution": "系统、模块、功能、接口和实施能力正文",
+    "feasibility_narrative": "可研专有的目标、背景、需求、必要性、可行性和效益论证",
+    "common_narrative": "跨项目可复用的原则、实施、保障和通用说明",
+    "project_specific": "依赖原项目事实、投资、现状或结论的文本",
+    "structure_only": "只允许复用标题、论证顺序或表格结构",
+    "legacy_unspecified": "历史数据待重新分类"
+  },
+  "project_types": [
+    "smart_hospital",
+    "medical_consortium",
+    "regional_health_platform",
+    "hospital_informationization"
+  ],
+  "project_type_status": {
+    "smart_hospital": "active",
+    "hospital_informationization": "active_hospital_alias",
+    "medical_consortium": "reserved_not_implemented",
+    "regional_health_platform": "reserved_not_implemented"
+  },
+  "semantic_sections": [
+    {
+      "code": "objective_scope_period",
+      "name": "建设目标、规模、内容、建设期摘要",
+      "match_any": ["建设目标、规模、内容、建设期"],
+      "section_role": "project_overview",
+      "content_type": "structure_only",
+      "reuse_class": "C",
+      "default_slot": "objective_scope_period",
+      "slots": [
+        {"code": "objective", "match_any": ["建设目标"]},
+        {"code": "scope", "match_any": ["建设规模"], "content_type": "project_specific", "reuse_class": "C"},
+        {"code": "content", "match_any": ["建设内容"], "content_type": "project_specific", "reuse_class": "C"},
+        {"code": "list", "match_any": ["建设清单"], "content_type": "project_specific", "reuse_class": "D"},
+        {"code": "period", "match_any": ["建设期"], "content_type": "project_specific", "reuse_class": "C"}
+      ]
+    },
+    {
+      "code": "objective_scope_period",
+      "name": "项目建设期摘要",
+      "match_all_exact": ["项目基本情况", "项目建设期"],
+      "section_role": "project_overview",
+      "content_type": "project_specific",
+      "reuse_class": "C",
+      "default_slot": "period"
+    },
+    {
+      "code": "policy_basis",
+      "name": "编制依据",
+      "match_any": ["可行性研究报告编制依据", "政策类依据", "行业标准依据", "安全类标准依据", "投资估算编制依据"],
+      "section_role": "basis",
+      "content_type": "structure_only",
+      "reuse_class": "D",
+      "default_slot": "basis_structure"
+    },
+    {
+      "code": "policy_background",
+      "name": "政策背景",
+      "match_any_exact": ["政策背景"],
+      "section_role": "current_state",
+      "content_type": "structure_only",
+      "reuse_class": "C",
+      "default_slot": "policy_background_structure"
+    },
+    {
+      "code": "project_background",
+      "name": "项目建设背景",
+      "match_any_exact": ["项目建设背景"],
+      "section_role": "current_state",
+      "content_type": "feasibility_narrative",
+      "reuse_class": "C",
+      "default_slot": "project_background",
+      "slots": [
+        {"code": "baseline", "match_any": ["基本情况"]},
+        {"code": "current_state", "match_any": ["信息化现状"]},
+        {"code": "assessment_target_baseline", "match_any": ["信息化评级", "建设目标现状"]},
+        {"code": "problem", "match_any": ["存在问题"]}
+      ]
+    },
+    {
+      "code": "requirements_analysis",
+      "name": "需求分析",
+      "match_any_exact": ["需求分析"],
+      "section_role": "problem_need",
+      "content_type": "feasibility_narrative",
+      "reuse_class": "B",
+      "default_slot": "requirements_analysis",
+      "slots": [
+        {"code": "policy_need", "match_any": ["政策需求"]},
+        {"code": "business_need", "match_any": ["业务需求"]},
+        {"code": "functional_need", "match_any": ["功能需求"]},
+        {"code": "data_need", "match_any": ["数据需求"]},
+        {"code": "performance_need", "match_any": ["性能需求"]},
+        {"code": "security_need", "match_any": ["安全需求"]}
+      ]
+    },
+    {
+      "code": "necessity_feasibility",
+      "name": "项目建设必要性和可行性",
+      "match_any": ["项目建设必要性和可行性", "必要性分析", "可行性分析"],
+      "section_role": "necessity_feasibility",
+      "content_type": "feasibility_narrative",
+      "reuse_class": "B",
+      "default_slot": "necessity_feasibility",
+      "slots": [
+        {"code": "necessity_policy", "match_any": ["政策的必要", "落实国家和地方"]},
+        {"code": "necessity_assessment", "match_any": ["电子病历", "互联互通"]},
+        {"code": "necessity_quality", "match_any": ["医疗质量", "患者安全"]},
+        {"code": "necessity_service", "match_any": ["就医体验", "医技协同"]},
+        {"code": "necessity_data", "match_any": ["数据治理", "精细化管理"]},
+        {"code": "feasibility_policy", "match_any": ["政策可行性"]},
+        {"code": "feasibility_economic", "match_any": ["经济可行性"]},
+        {"code": "feasibility_technical", "match_any": ["技术可行性"]},
+        {"code": "feasibility_legal", "match_any": ["法律可行性"]}
+      ]
+    },
+    {
+      "code": "construction_principles",
+      "name": "建设原则",
+      "match_all": ["项目总体设计", "设计原则"],
+      "section_role": "overall_design",
+      "content_type": "common_narrative",
+      "reuse_class": "B",
+      "default_slot": "construction_principles"
+    },
+    {
+      "code": "overall_objective_scope",
+      "name": "项目建设目标、规模与内容",
+      "match_any": ["项目建设目标、规模与内容"],
+      "section_role": "overall_design",
+      "content_type": "feasibility_narrative",
+      "reuse_class": "B",
+      "default_slot": "overall_objective_scope",
+      "slots": [
+        {"code": "overall_objective", "match_any": ["整体目标"]},
+        {"code": "technical_objective", "match_any": ["技术目标"]},
+        {"code": "scope", "match_any": ["建设规模"], "content_type": "project_specific", "reuse_class": "C"},
+        {"code": "list", "match_any": ["建设清单"], "content_type": "project_specific", "reuse_class": "D"}
+      ]
+    },
+    {
+      "code": "standards_norms",
+      "name": "标准规范",
+      "match_any": ["标准规范建设内容", "标准规范总体架构", "标准体系具体内容"],
+      "section_role": "overall_design",
+      "content_type": "common_narrative",
+      "reuse_class": "B",
+      "default_slot": "standards_norms"
+    },
+    {
+      "code": "information_resource_planning",
+      "name": "信息资源规划",
+      "match_any": ["信息资源规划和数据库建设", "信息资源规划"],
+      "section_role": "overall_design",
+      "content_type": "common_narrative",
+      "reuse_class": "B",
+      "default_slot": "information_resource_planning"
+    },
+    {
+      "code": "system_relationships",
+      "name": "与其他系统的关系",
+      "match_any_exact": ["与其他系统的关系"],
+      "section_role": "overall_design",
+      "content_type": "structure_only",
+      "reuse_class": "C",
+      "default_slot": "system_relationship_structure"
+    },
+    {
+      "code": "technical_route",
+      "name": "技术路线",
+      "match_any": ["技术设计方案", "总体架构设计", "技术架构设计", "项目技术路线"],
+      "section_role": "overall_design",
+      "content_type": "common_narrative",
+      "reuse_class": "B",
+      "default_slot": "technical_route"
+    },
+    {
+      "code": "application_software_solution",
+      "name": "应用软件建设方案",
+      "match_any": ["应用软件建设方案", "硬件资源配置需求"],
+      "section_role": "construction_content",
+      "content_type": "construction_solution",
+      "reuse_class": "C",
+      "default_slot": "reference_solution_structure"
+    },
+    {
+      "code": "implementation_operation",
+      "name": "项目实施及保障措施",
+      "match_any": ["项目实施及保障措施"],
+      "section_role": "implementation_operation",
+      "content_type": "common_narrative",
+      "reuse_class": "B",
+      "default_slot": "implementation_operation",
+      "slots": [
+        {"code": "implementation_plan", "match_any": ["项目实施方案"]},
+        {"code": "staffing", "match_any": ["人员配置"]},
+        {"code": "organization", "match_any": ["组织保障"]},
+        {"code": "quality", "match_any": ["质量管理"]},
+        {"code": "risk", "match_any": ["风险与管控"]}
+      ]
+    },
+    {
+      "code": "construction_benefit",
+      "name": "项目建设效益",
+      "match_any": ["项目建设效益"],
+      "section_role": "benefit_performance",
+      "content_type": "feasibility_narrative",
+      "reuse_class": "B",
+      "default_slot": "construction_benefit",
+      "slots": [
+        {"code": "economic_benefit", "match_any": ["经济效益"]},
+        {"code": "social_benefit", "match_any": ["社会效益"]},
+        {"code": "performance_indicator", "match_any": ["评价性指标"]}
+      ]
+    },
+    {
+      "code": "investment_funding",
+      "name": "投资估算与资金来源",
+      "match_any": ["项目投资估算", "投资估算", "项目资金来源"],
+      "section_role": "investment_funding",
+      "content_type": "project_specific",
+      "reuse_class": "D",
+      "default_slot": "investment_structure"
+    },
+    {
+      "code": "conclusion",
+      "name": "研究结论及建议",
+      "match_any": ["研究结论及建议", "主要研究结论", "问题与建议"],
+      "section_role": "conclusion",
+      "content_type": "structure_only",
+      "reuse_class": "C",
+      "default_slot": "conclusion_structure"
+    },
+    {
+      "code": "project_overview",
+      "name": "项目基本情况",
+      "match_any": ["项目基本情况", "项目单位概况"],
+      "section_role": "project_overview",
+      "content_type": "project_specific",
+      "reuse_class": "C",
+      "default_slot": "project_overview"
+    }
+  ],
+  "assessment_patterns": [
+    {"framework": "emr", "pattern": "电子病历[^。；，]{0,30}(五级|5级)"},
+    {"framework": "interoperability", "pattern": "互联互通[^。；，]{0,30}(四级甲等|四甲|4A)"}
+  ]
+}

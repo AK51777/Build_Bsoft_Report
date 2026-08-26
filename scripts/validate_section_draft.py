@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from chapter_rules import resolve_chapter_rule
 from knowledge_db import apply_migrations, connect, dump_json, now_iso, sha256_text
 
 
@@ -19,6 +20,9 @@ HIGH_RISK_NUMBER_PATTERN = re.compile(
     r"(?:\d+(?:\.\d+)?\s*(?:%|万元|亿元|天|月|年|级|个|套|项))"
 )
 EVIDENCE_MARKER_PATTERN = re.compile(r"<!--\s*evidence\s*:\s*([^>]+?)\s*-->", re.I)
+STANDARD_BLOCK_MARKER_PATTERN = re.compile(
+    r"<!--\s*standard-blocks\s*:\s*([^>]+?)\s*-->", re.I
+)
 
 
 def visible_length(content: str) -> int:
@@ -26,6 +30,31 @@ def visible_length(content: str) -> int:
     text = re.sub(r"```.*?```", "", text, flags=re.S)
     text = re.sub(r"[#*_`|>\-\s]", "", text)
     return len(text)
+
+
+def normalized_standard_text(text: str, forbidden_terms: list[str] | None = None) -> str:
+    value = text or ""
+    for term in [
+        *(forbidden_terms or []),
+        "BsoftGPT",
+        "Bsoft",
+        "创业慧康",
+        "创业的产品资源",
+    ]:
+        if term:
+            value = value.replace(term, "")
+    for source, target in {
+        "本院": "医院",
+        "我院": "医院",
+        "国家卫生部": "国家卫生健康主管部门",
+        "卫生部": "卫生健康主管部门",
+        "已经实现": "拟实现",
+        "已实现": "拟实现",
+        "实现了": "拟实现",
+        "达到了": "拟达到",
+    }.items():
+        value = value.replace(source, target)
+    return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value).casefold()
 
 
 def assess_content(
@@ -41,6 +70,22 @@ def assess_content(
 
     def add(code: str, description: str, severity: str = "blocking") -> None:
         issues.append({"code": code, "description": description, "severity": severity})
+
+    contract = resolve_chapter_rule(
+        str(plan.get("chapter_code") or ""), str(plan.get("section_role") or "")
+    )
+    contract_validation = contract.get("validation", {})
+    matched_process_phrases = [
+        phrase
+        for phrase in contract.get("forbidden_output_phrases", [])
+        if phrase and phrase in content
+    ]
+    if matched_process_phrases:
+        add(
+            "authoring_process_language",
+            "正文包含仅适用于编制或核验过程的内部提示语："
+            + "、".join(matched_process_phrases),
+        )
 
     length = visible_length(content)
     length_min = int(plan.get("length_min") or 0)
@@ -74,7 +119,7 @@ def assess_content(
         if source.get("source_type") == "scope" and source.get("usage_mode") == "direct"
     ]
     missing_scope_names = [name for name in direct_scope_names if name and name not in content]
-    if missing_scope_names:
+    if contract_validation.get("require_scope_coverage") and missing_scope_names:
         add(
             "scope_not_carried",
             "正文未承载确认范围：" + "、".join(missing_scope_names[:10]),
@@ -111,6 +156,43 @@ def assess_content(
     matched_forbidden = sorted(term for term in forbidden_terms if term in content)
     if matched_forbidden:
         add("reference_residue", "正文命中语料禁用词：" + "、".join(matched_forbidden))
+
+    standard_sources = [
+        source
+        for source in sources
+        if source.get("source_type") == "corpus"
+        and source.get("usage_mode") == "parameterized"
+    ]
+    if standard_sources and contract_validation.get("require_standard_block_markers"):
+        marker_ids = {
+            item.strip()
+            for marker in STANDARD_BLOCK_MARKER_PATTERN.findall(content)
+            for item in re.split(r"[,，;；\s]+", marker)
+            if item.strip()
+        }
+        required_ids = {str(source["source_object_id"]) for source in standard_sources}
+        missing_ids = sorted(required_ids - marker_ids)
+        if missing_ids:
+            add(
+                "standard_solution_block_marker_missing",
+                "标准方案全量组装缺少语料块追踪标记：" + "、".join(missing_ids[:20]),
+            )
+    if standard_sources and contract_validation.get("require_standard_block_text"):
+        normalized_content = normalized_standard_text(content)
+        missing_text_ids: list[str] = []
+        for source in standard_sources:
+            source_text = normalized_standard_text(
+                str(source.get("clean_text") or ""),
+                json.loads(source.get("forbidden_terms_json") or "[]"),
+            )
+            if source_text and source_text not in normalized_content:
+                missing_text_ids.append(str(source["source_object_id"]))
+        if missing_text_ids:
+            add(
+                "standard_solution_block_text_missing",
+                "标准方案正文未按全量组装契约承载语料块："
+                + "、".join(missing_text_ids[:20]),
+            )
 
     outline_nodes = plan.get("outline_nodes") or []
     if outline_nodes:
@@ -154,6 +236,8 @@ def assess_content(
         "issue_count": len(issues),
         "blocking_count": blocking_count,
         "warning_count": warning_count,
+        "chapter_rule_layers": contract.get("rule_layers", []),
+        "assembly_mode": contract.get("assembly_mode"),
         "issues": issues,
         "validated_at": now_iso(),
     }
@@ -212,9 +296,10 @@ def validate_draft(
                 item["standard_name"] = row["standard_name"] if row else ""
             elif source["source_type"] == "corpus":
                 row = conn.execute(
-                    "SELECT forbidden_terms_json FROM corpus_block WHERE block_id=?",
+                    "SELECT clean_text,forbidden_terms_json FROM corpus_block WHERE block_id=?",
                     (source["source_object_id"],),
                 ).fetchone()
+                item["clean_text"] = row["clean_text"] if row else ""
                 item["forbidden_terms_json"] = row["forbidden_terms_json"] if row else "[]"
             sources.append(item)
         plan_data = dict(plan)

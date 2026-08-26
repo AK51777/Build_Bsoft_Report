@@ -426,6 +426,14 @@ ASPECT_PROJECT_MECHANISMS = {
 
 
 CHAPTER_SYNTHESIS_PARAGRAPHS = {
+    "1.1.2": [
+        "本期建设内容以医院确认的建设清单为边界，按照临床诊疗与电子病历、护理与医技协同、患者服务、平台集成、数据治理、运营管理和安全运行等领域统筹推进。各建设事项既保持清单名称和采购边界一致，又通过统一身份、统一标准、接口服务和数据共享形成协同关系，避免将单项系统建设割裂为相互独立的信息孤岛。",
+        "电子病历五级目标重点牵引临床记录结构化、跨部门信息共享、诊疗流程闭环、质量控制和临床决策支持等能力建设；互联互通四级甲等目标重点牵引统一标准、主数据、共享文档、接口服务、数据质量和平台运行管理。两项目标共同落实到需求、设计、建设内容、测试场景和验收材料，但不改变客户确认的系统范围和采购边界。",
+        "建设方式按照清单中的新建、升级和利旧安排分别深化。新建事项应明确与现有应用、平台和数据资源的衔接关系，升级事项应兼顾既有授权、历史数据、接口兼容和业务连续性；清单未明确建设方式的个别事项，在不改变建设范围的前提下结合现状调研和深化设计确定实施路径。",
+        "临床、护理和医技应用建设以患者诊疗过程为主线，强化病历记录、医嘱执行、检查检验、合理用药、输血治疗、质量控制和结果反馈之间的衔接；患者服务建设贯通预约、挂号、缴费、信息查询和结果获取等环节，持续改善服务便利性和就医体验。",
+        "平台与数据建设为各业务系统提供统一身份、主数据、接口交换、数据汇聚、质量管理和共享服务，并通过临床数据中心、运营数据中心及相关分析应用支撑临床服务、医疗质量、运营管理和行业上报。数据利用同时落实分类分级、权限控制、日志审计和备份恢复要求。",
+        "各项建设内容按照统一目标和总体架构协同实施，既关注单个系统的功能完整性，也关注跨系统业务流程、数据一致性和异常处置能力。项目验收将建设清单、需求设计、系统配置、接口数据、测试场景和交付成果相互对应，保证建设范围、实施成果和验收口径保持一致。",
+    ],
     "2.2.1": [
         "本章最终输出不应只是问题清单，还应形成问题之间的主次关系。平台和数据问题往往影响多套业务系统，临床流程问题则直接影响用户使用和质量安全；评审时应优先确认跨系统、跨部门且会改变投资或实施路径的问题，再处理局部界面和操作优化事项。",
     ],
@@ -852,14 +860,28 @@ def generic_table(
             ["效益", "服务便利、临床质量和管理应用类指标", "业务记录、质控和管理材料", "政策、基线和责任部门确认", "对应管理部门"],
         ]
     elif role == "project_overview":
-        headers = ["项目要素", "当前内容", "材料状态", "使用边界"]
-        rows = [
-            ["项目名称", project["official_name"], "项目配置", "用于全文统一称谓"],
-            ["建设单位", project.get("owner_name") or "待确认", "项目配置", "正式交付前复核全称"],
-            ["建设范围", scope_context(scopes), "客户清单", "不得由能力映射扩大"],
-            ["建设地点", "待项目材料确认", "待补充", "不得根据单位地址推定"],
-            ["建设期与投资", "待项目材料确认", "待补充", "不得由模型估算"],
-        ]
+        if chapter_code == "1.1.2":
+            headers = ["项目要素", "主要内容", "说明"]
+            targets = "；".join(
+                str(item).strip()
+                for item in json_list(project.get("acceptance_targets_json"))
+                if str(item).strip()
+            ) or "以项目批复和建设单位确认口径为准"
+            rows = [
+                ["项目名称", project["official_name"], "全文采用统一名称"],
+                ["建设单位", project.get("owner_name") or "以项目批复为准", "项目建设主体"],
+                ["规划目标", targets, "作为本期建设规划和验收设计依据"],
+                ["建设范围", scope_context(scopes), "以医院确认的本期建设清单为边界"],
+            ]
+        else:
+            headers = ["项目要素", "当前内容", "材料状态", "使用边界"]
+            rows = [
+                ["项目名称", project["official_name"], "项目配置", "用于全文统一称谓"],
+                ["建设单位", project.get("owner_name") or "待确认", "项目配置", "正式交付前复核全称"],
+                ["建设范围", scope_context(scopes), "客户清单", "不得由能力映射扩大"],
+                ["建设地点", "待项目材料确认", "待补充", "不得根据单位地址推定"],
+                ["建设期与投资", "待项目材料确认", "待补充", "不得由模型估算"],
+            ]
     elif role == "current_state":
         headers = ["核实对象", "当前已知", "重点核实", "预期成果"]
         rows = [
@@ -974,7 +996,7 @@ def policy_section(
         intro = (
             f"本节列示与{project['official_name']}建设方向相关的国家政策文件，重点说明公立医院高质量发展、"
             "互联网医疗健康、医院平台整合和数据安全等要求如何由本期建设范围承接。"
-            "政策采用状态在正式报审前由项目负责人复核确认。"
+            "本项目采用的政策文件应保持现行有效；文件发生修订、替代或废止时，应同步调整相关建设和验收口径。"
         )
         table_title = "政策法规依据表"
         section_method = [
@@ -1326,6 +1348,7 @@ def construction_section(
             else:
                 lines.extend(
                     [
+                        f"<!-- standard-blocks: {' '.join(block_ids)} -->",
                         (
                             f"{current_feature}用于承载{current_scope}中与{current_capability}相关的业务。{feature_description}"
                             "实际启用范围应结合医院流程、岗位权限、主数据和既有系统接口进行参数化设计。"
@@ -1359,6 +1382,7 @@ def construction_section(
             current_profile = feature_control_profile(current_feature, source_text)
             lines.extend(
                 [
+                    f"<!-- standard-blocks: {' '.join(block_ids)} -->",
                     (
                         f"{current_feature}用于承载{current_scope}中与{current_capability}相关的业务。"
                         f"{source_text or '本功能应结合需求基线进一步细化。'}"
@@ -1387,12 +1411,240 @@ def construction_section(
     return lines
 
 
+SLOT_TITLES = {
+    "overall_objective_scope": "总体目标与建设边界",
+    "overall_objective": "总体目标",
+    "technical_objective": "技术目标",
+    "requirements_analysis": "需求分析",
+    "policy_need": "政策需求",
+    "business_need": "业务需求",
+    "functional_need": "功能需求",
+    "data_need": "数据需求",
+    "performance_need": "性能需求",
+    "security_need": "安全需求",
+    "construction_principles": "建设原则",
+    "technical_route": "技术路线",
+    "implementation_plan": "实施安排",
+    "staffing": "人员配置",
+    "organization": "组织保障",
+    "quality": "质量管理",
+    "risk": "风险控制",
+    "economic_benefit": "经济效益",
+    "social_benefit": "社会效益",
+    "performance_indicator": "绩效指标",
+}
+
+NON_DELIVERABLE_CORPUS_MARKERS = (
+    "经核验的相关条款主要包括",
+    "正式报审前还需复核",
+    "不得把指导、鼓励或评价性内容改写为项目已经完成的事实",
+)
+
+
+def package_fact_sources(task_package: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        source["data"]
+        for source in task_package.get("sources", [])
+        if source.get("source_type") == "fact"
+        and source.get("usage_mode") == "direct"
+        and isinstance(source.get("data"), dict)
+        and not source["data"].get("missing")
+    ]
+
+
+def project_variable_values(
+    project: dict[str, Any], task_package: dict[str, Any]
+) -> dict[str, str]:
+    facts = package_fact_sources(task_package)
+    fact_by_key = {str(fact.get("fact_key") or ""): fact for fact in facts}
+
+    def fact_text(*keys: str) -> str:
+        for key in keys:
+            fact = fact_by_key.get(key)
+            if fact:
+                return str(fact.get("normalized_value") or fact.get("fact_content") or "").strip("。 ")
+        return ""
+
+    targets = json_list(project.get("acceptance_targets_json"))
+    target_text = "；".join(str(item) for item in targets if str(item).strip())
+    jurisdiction_name = str(project.get("jurisdiction_name") or "")
+    return {
+        "project_name": str(project.get("official_name") or ""),
+        "hospital_name": str(project.get("owner_name") or ""),
+        "owner_name": str(project.get("owner_name") or ""),
+        "region_name": fact_text("location.region_name", "project.region_name") or jurisdiction_name,
+        "city_name": fact_text("location.city_name", "project.city_name"),
+        "jurisdiction_name": jurisdiction_name,
+        "emr_target": fact_text("acceptance.emr_level") or target_text,
+        "interoperability_target": fact_text(
+            "acceptance.interop_level", "acceptance.interoperability_level"
+        )
+        or target_text,
+    }
+
+
+def selected_narrative_sources(task_package: dict[str, Any]) -> list[dict[str, Any]]:
+    selected = [
+        source
+        for source in task_package.get("sources", [])
+        if source.get("source_type") == "corpus"
+        and source.get("usage_mode") in {"direct", "parameterized", "structure_only"}
+        and isinstance(source.get("data"), dict)
+        and source["data"].get("review_status") == "approved"
+    ]
+    return sorted(
+        selected,
+        key=lambda source: (
+            int(source["data"].get("source_order") or 0),
+            str(source.get("source_object_id") or ""),
+        ),
+    )
+
+
+def adapt_narrative_block(
+    source: dict[str, Any], variable_values: dict[str, str]
+) -> str:
+    block = source["data"]
+    if source.get("usage_mode") == "structure_only":
+        return ""
+    text = str(block.get("clean_text") or "").strip()
+    slots = json_list(block.get("variable_slots_json"))
+    for slot in slots:
+        value = str(variable_values.get(str(slot)) or "").strip()
+        if not value:
+            return ""
+        text = text.replace("{{" + str(slot) + "}}", value)
+    if re.search(r"\{\{[a-z][a-z0-9_]*\}\}", text):
+        return ""
+    forbidden_terms = json_list(block.get("forbidden_terms_json"))
+    if any(str(term) and str(term) in text for term in forbidden_terms):
+        return ""
+    if any(marker in text for marker in NON_DELIVERABLE_CORPUS_MARKERS):
+        return ""
+    return text
+
+
+def narrative_corpus_lines(
+    project: dict[str, Any], plan: dict[str, Any], task_package: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    variables = project_variable_values(project, task_package)
+    lines: list[str] = []
+    used_ids: list[str] = []
+    current_slot = ""
+    subsection_no = 0
+    for source in selected_narrative_sources(task_package):
+        text = adapt_narrative_block(source, variables)
+        if not text:
+            continue
+        block = source["data"]
+        slot = str(block.get("content_slot") or block.get("semantic_section") or "语料组装")
+        if slot != current_slot:
+            subsection_no += 1
+            title = SLOT_TITLES.get(slot) or str(
+                (json_list(block.get("heading_path_json")) or [slot])[-1]
+            )
+            lines.extend([f"#### {plan['chapter_code']}.{subsection_no} {title}", ""])
+            current_slot = slot
+        block_id = str(source["source_object_id"])
+        lines.extend([f"<!-- corpus-block: {block_id} -->", text, ""])
+        used_ids.append(block_id)
+    return lines, used_ids
+
+
+def objective_scope_summary_section(
+    project: dict[str, Any],
+    plan: dict[str, Any],
+    scopes: list[dict[str, Any]],
+    required_tables: list[str],
+    task_package: dict[str, Any],
+) -> list[str]:
+    facts = package_fact_sources(task_package)
+    confirmed_targets = [
+        str(fact.get("fact_content") or "").strip()
+        for fact in facts
+        if str(fact.get("fact_key") or "").startswith("acceptance.")
+    ]
+    input_targets = [
+        str(item).strip()
+        for item in json_list(project.get("acceptance_targets_json"))
+        if str(item).strip()
+    ]
+    if confirmed_targets:
+        target_sentence = "；".join(confirmed_targets)
+    elif input_targets:
+        target_sentence = "；".join(input_targets) + "，具体采用口径以院方确认结果为准"
+    else:
+        target_sentence = "围绕医院业务发展、信息共享、数据治理和安全运行形成整体能力，具体目标以项目批复和建设单位确认口径为准"
+    scope_names = [
+        str(scope.get("standard_name") or "").strip()
+        for scope in scopes
+        if str(scope.get("standard_name") or "").strip()
+        and scope.get("status") not in {"rejected", "not_applicable"}
+    ]
+    scope_sentence = (
+        scope_context(scopes, limit=12)
+        if scope_names
+        else "项目批复及建设单位确认的建设清单"
+    )
+    period_facts = [
+        str(fact.get("fact_content") or "").strip()
+        for fact in facts
+        if str(fact.get("fact_key") or "").startswith(("schedule.", "period."))
+    ]
+    if period_facts:
+        period_lines = [
+            f"项目建设期为{'；'.join(period_facts)}。实施计划应同步分解里程碑、第三方配合、数据迁移、测试上线和试运行安排。"
+        ]
+    else:
+        period_lines = [
+            "项目建设期将结合立项批复、采购组织、系统实施和试运行安排统筹确定。建设期间按照需求确认、深化设计、配置开发、接口与数据治理、综合测试、上线试运行和验收移交等阶段组织实施，并合理安排医院业务部门及相关系统厂商的配合时间。"
+        ]
+    canonical_sources = selected_narrative_sources(task_package)
+    lines = [
+        (
+            f"{project['official_name']}以医院业务发展和信息化整体能力提升为导向，"
+            "统筹确定本期建设目标、建设规模、主要内容和实施安排。"
+        ),
+        "",
+    ]
+    for source in canonical_sources:
+        lines.append(
+            f"<!-- corpus-block: {source['source_object_id']}; use: derived-summary -->"
+        )
+    lines.extend(
+        [
+            f"#### {plan['chapter_code']}.1 建设目标",
+            "",
+            f"本项目规划目标为：{target_sentence}。具体建设和验收按照现行评价标准、项目批复及建设单位确认口径执行。",
+            "",
+            f"#### {plan['chapter_code']}.2 建设规模与内容",
+            "",
+            f"本期建设规模和内容以医院确认清单为边界，主要包括{scope_sentence}。各项标准化和平台化能力均在既定建设范围内深化落实。",
+            "",
+            f"#### {plan['chapter_code']}.3 建设期",
+            "",
+            *period_lines,
+            "",
+        ]
+    )
+    if required_tables:
+        lines.extend([*generic_table(project, plan, scopes, required_tables), ""])
+    return lines
+
+
 def generic_section(
     project: dict[str, Any],
     plan: dict[str, Any],
     scopes: list[dict[str, Any]],
     required_tables: list[str],
+    task_package: dict[str, Any] | None = None,
 ) -> list[str]:
+    task_package = task_package or {}
+    contract = task_package.get("generation_contract") or {}
+    if contract.get("assembly_mode") == "derived_objective_scope_summary":
+        return objective_scope_summary_section(
+            project, plan, scopes, required_tables, task_package
+        )
     role = plan.get("section_role") or ""
     aspects = CHAPTER_ARGUMENT_OUTLINES.get(
         plan["chapter_code"],
@@ -1413,6 +1665,24 @@ def generic_section(
     ]
     if required_tables:
         lines.extend([*generic_table(project, plan, scopes, required_tables), ""])
+    corpus_lines, used_corpus_ids = narrative_corpus_lines(
+        project, plan, task_package
+    )
+    if corpus_lines:
+        lines.extend(corpus_lines)
+        lines.extend(
+            [
+                f"<!-- narrative-corpus-count: {len(used_corpus_ids)} -->",
+                (
+                    "结合本期客户建设清单，相关目标和方案应继续落实到业务流程、系统能力、数据接口、"
+                    "实施任务和验收证据；未由项目材料明确的现状、数量、投资、工期和完成状态不作确定性表述。"
+                ),
+                "",
+            ]
+        )
+        threshold = max(700, int(plan.get("length_min") or 0) // 2)
+        if visible_length("\n".join(lines)) >= threshold:
+            return lines
     for index, aspect in enumerate(aspects, start=1):
         lines.extend([f"#### {plan['chapter_code']}.{index} {aspect}", ""])
         paragraphs = argument_paragraphs(project, plan, aspect, scopes)
@@ -1445,6 +1715,23 @@ def ensure_minimum_length(
     length_min = int(plan.get("length_min") or 0)
     target_length = length_min + max(80, int(length_min * 0.03)) if length_min else 0
     if not target_length or visible_length("\n".join(lines)) >= target_length:
+        return lines
+    if plan["chapter_code"] == "1.1.2":
+        for paragraph in [
+            (
+                "本期系统范围同时涉及门急诊、住院、护理、医技、药事、病案、患者服务、平台集成和数据应用，"
+                "实施中应优先明确公共数据标准、患者与人员主索引、统一认证、接口责任和共享服务，"
+                "再按业务链推进应用建设和联调，保证前端业务改造与平台数据能力同步落地。"
+            ),
+            (
+                "项目建成后，将形成覆盖主要诊疗服务、临床协同、医疗质量、运营管理和数据治理的数字化支撑体系。"
+                "各系统在保持专业分工的基础上实现信息共享和流程协同，为电子病历应用深化、互联互通能力提升、"
+                "患者服务优化以及医院精细化管理提供持续支撑。"
+            ),
+        ]:
+            lines.extend([paragraph, ""])
+            if visible_length("\n".join(lines)) >= target_length:
+                break
         return lines
     scope_names = list(
         dict.fromkeys(
@@ -1576,6 +1863,7 @@ def build_initial_drafts(
     output_dir: Path,
     *,
     adopt: bool = True,
+    chapter_codes: list[str] | None = None,
 ) -> dict[str, Any]:
     database = database.resolve()
     task_package_dir = task_package_dir.resolve()
@@ -1605,6 +1893,17 @@ def build_initial_drafts(
                 (project["project_id"],),
             )
         ]
+        requested = list(dict.fromkeys(chapter_codes or []))
+        if requested:
+            requested_set = set(requested)
+            plans = [plan for plan in plans if plan["chapter_code"] in requested_set]
+            found = {plan["chapter_code"] for plan in plans}
+            missing = [code for code in requested if code not in found]
+            if missing:
+                raise RuntimeError(
+                    "requested chapters were not found or are not applicable: "
+                    + ", ".join(missing)
+                )
         scopes = [
             dict(row)
             for row in connection.execute(
@@ -1646,10 +1945,15 @@ def build_initial_drafts(
             item = dict(row)
             item["metadata"] = json.loads(item.get("metadata_json") or "{}")
             nodes_by_plan[row["plan_id"]].append(item)
-    policy_material = build_policy_material(database, project_code, mode="working")
+    policy_material = (
+        build_policy_material(database, project_code, mode="working")
+        if any(plan["section_role"] == "basis" for plan in plans)
+        else {}
+    )
     results = []
     for plan in plans:
         required_tables = json_list(plan.get("required_tables_json"))
+        package_path, package = find_package(task_package_dir, plan["chapter_code"])
         if plan["section_role"] == "construction_content":
             lines = construction_section(
                 project,
@@ -1663,12 +1967,13 @@ def build_initial_drafts(
         elif plan["section_role"] == "basis":
             lines = policy_section(project, plan, policy_material, required_tables)
         else:
-            lines = generic_section(project, plan, scopes, required_tables)
+            lines = generic_section(
+                project, plan, scopes, required_tables, package
+            )
         lines = ensure_minimum_length(lines, project, plan, scopes)
         content = "\n".join(lines).rstrip() + "\n"
         draft_path = output_dir / f"CH{plan['chapter_code']}-{safe_title(plan['section_title'])}.md"
         draft_path.write_text(content, encoding="utf-8")
-        package_path, package = find_package(task_package_dir, plan["chapter_code"])
         save_result = save_draft(
             database,
             project_code,
@@ -1715,9 +2020,11 @@ def build_initial_drafts(
             }
         )
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "project_code": project_code,
         "generation_mode": "working",
+        "selection_mode": "chapter" if requested else "all_applicable_chapters",
+        "requested_chapters": requested,
         "generator": "evidence-bound-foundation-v2",
         "section_count": len(results),
         "adopted_count": sum(item["adopted"] for item in results),
@@ -1740,6 +2047,12 @@ def main() -> int:
     parser.add_argument("task_package_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--no-adopt", action="store_true")
+    parser.add_argument(
+        "--chapter",
+        action="append",
+        dest="chapters",
+        help="仅生成指定章节；可重复使用，例如 --chapter 5.1.1",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = build_initial_drafts(
@@ -1748,6 +2061,7 @@ def main() -> int:
         args.task_package_dir,
         args.output_dir,
         adopt=not args.no_adopt,
+        chapter_codes=args.chapters,
     )
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:

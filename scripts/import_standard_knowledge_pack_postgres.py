@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import a reviewed standard knowledge pack into PostgreSQL."""
+"""Import a reviewed standard-solution or reference-corpus pack into PostgreSQL."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from knowledge_db import load_json, now_iso, sha256_text, stable_id
 from postgres_knowledge_db import add_connection_arguments, apply_migrations, canonical_json, connect, jsonb, validate_schema
 
 
-IMPORTER_VERSION = "standard-pack-postgres-v1"
+IMPORTER_VERSION = "knowledge-pack-postgres-v2"
 
 
 def source_type(file_name: str) -> str:
@@ -26,12 +26,27 @@ def retire_superseded_packages(
     *,
     schema: str,
     package_id: str,
-    solution_source_id: str,
+    primary_source_id: str | None = None,
+    source_role: str = "standard_solution",
+    solution_source_id: str | None = None,
     publish: bool,
 ) -> int:
     if not publish:
         return 0
+    primary_source_id = primary_source_id or solution_source_id
+    if not primary_source_id:
+        raise ValueError("primary_source_id is required")
     validate_schema(schema)
+    role_predicate = (
+        "source.source_role='standard_solution'"
+        if source_role == "standard_solution"
+        else "source.source_role=%s"
+    )
+    parameters = (
+        (package_id, primary_source_id)
+        if source_role == "standard_solution"
+        else (package_id, primary_source_id, source_role)
+    )
     cursor.execute(
         f"""
         UPDATE {schema}.knowledge_package AS package
@@ -43,16 +58,16 @@ def retire_superseded_packages(
             FROM {schema}.package_source AS source
             WHERE source.package_id=package.package_id
               AND source.source_id=%s
-              AND source.source_role='standard_solution'
+              AND {role_predicate}
           )
         """,
-        (package_id, solution_source_id),
+        parameters,
     )
     return cursor.rowcount
 
 
 def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: str) -> dict[str, Any]:
-    validate_pack(payload)
+    contract = validate_pack(payload)
     validate_schema(schema)
     migrations = apply_migrations(connection, schema=schema)
     package_id = payload["package_id"]
@@ -61,10 +76,8 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
     import_run_id = stable_id("PGIMPORT", IMPORTER_VERSION, package_id, package_hash)
     timestamp = now_iso()
     sources = {item["role"]: item for item in payload.get("source_files", [])}
-    solution = sources.get("standard_solution")
-    if not solution:
-        raise ValueError("standard_solution source metadata is required")
-    solution_source_id = stable_id("SHAREDSOURCE", solution["sha256"])
+    primary_source = sources[contract["source_role"]]
+    primary_source_id = stable_id("SHAREDSOURCE", primary_source["sha256"])
     corpus = payload["corpus"]
     block_ids = {block["block_id"] for block in corpus["blocks"]}
     approved_block_ids = {
@@ -77,7 +90,8 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
             cursor,
             schema=schema,
             package_id=package_id,
-            solution_source_id=solution_source_id,
+            primary_source_id=primary_source_id,
+            source_role=contract["source_role"],
             publish=publish,
         )
         cursor.execute(
@@ -110,7 +124,12 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
                 package_status,
                 package_hash,
                 jsonb(payload.get("review_summary", {})),
-                jsonb({}),
+                jsonb(
+                    {
+                        "package_kind": contract["package_kind"],
+                        "source_corpus_type": corpus.get("source_corpus_type", ""),
+                    }
+                ),
                 timestamp if publish else None,
             ),
         )
@@ -149,11 +168,13 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
             f"""
             INSERT INTO {schema}.corpus_document (
               corpus_document_id,package_id,source_id,document_type,jurisdiction_code,
-              project_type,quality_level,permission_scope,review_status,version,metadata
-            ) VALUES (%s,%s,%s,%s,'',%s,%s,%s,%s,%s,%s)
+              project_type,source_corpus_type,quality_level,permission_scope,review_status,
+              version,metadata
+            ) VALUES (%s,%s,%s,%s,'',%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (corpus_document_id) DO UPDATE SET
               package_id=EXCLUDED.package_id,source_id=EXCLUDED.source_id,
               document_type=EXCLUDED.document_type,project_type=EXCLUDED.project_type,
+              source_corpus_type=EXCLUDED.source_corpus_type,
               quality_level=EXCLUDED.quality_level,permission_scope=EXCLUDED.permission_scope,
               review_status=EXCLUDED.review_status,version=EXCLUDED.version,
               metadata=EXCLUDED.metadata,updated_at=NOW()
@@ -161,14 +182,15 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
             (
                 corpus["document_id"],
                 package_id,
-                solution_source_id,
+                primary_source_id,
                 corpus.get("document_type", "feasibility_study"),
                 corpus.get("project_type", "hospital_informationization"),
+                corpus.get("source_corpus_type", "standard_solution"),
                 corpus.get("quality_level", "B"),
                 payload["permission_scope"],
                 corpus.get("review_status", "approved"),
                 package_id,
-                jsonb({}),
+                jsonb({"source_sections": corpus.get("source_sections", [])}),
             ),
         )
         block_rows = []
@@ -178,6 +200,9 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
             block_rows.append(
                 (
                     block["block_id"], corpus["document_id"], block_index,
+                    block.get("source_section_id", ""),
+                    int(block.get("chunk_index", 0)),
+                    bool(block.get("source_is_heading", False)),
                     block.get("source_location", ""), jsonb(block.get("heading_path", [])),
                     block["section_role"], block.get("module_code", ""), block["clean_text"],
                     block["reuse_class"], block.get("quality_level", "B"),
@@ -186,18 +211,30 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
                     jsonb(block.get("prerequisites", [])), jsonb(block.get("variable_slots", [])),
                     jsonb(block.get("forbidden_terms", [])), block.get("length_band", ""),
                     block["review_status"], sha256_text(block["clean_text"]),
+                    block.get("content_type", "construction_solution"),
+                    block.get("semantic_section", "application_software_solution"),
+                    block.get("content_slot", block.get("module_code", "")),
+                    int(block.get("source_order", block_index)),
+                    block.get("adaptation_mode", "parameterized"),
+                    jsonb(block.get("assessment_targets", [])),
+                    jsonb(block.get("construction_scope_tags", [])),
                 )
             )
         cursor.executemany(
             f"""
             INSERT INTO {schema}.corpus_block (
-              block_id,corpus_document_id,block_index,source_location,heading_path,
+              block_id,corpus_document_id,block_index,source_section_id,chunk_index,
+              source_is_heading,source_location,heading_path,
               section_role,module_code,clean_text,reuse_class,quality_level,
               applicable_document_types,applicable_project_types,prerequisites,
-              variable_slots,forbidden_terms,length_band,review_status,text_hash
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              variable_slots,forbidden_terms,length_band,review_status,text_hash,
+              content_type,semantic_section,content_slot,source_order,adaptation_mode,
+              assessment_targets,construction_scope_tags
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (block_id) DO UPDATE SET
               block_index=EXCLUDED.block_index,source_location=EXCLUDED.source_location,
+              source_section_id=EXCLUDED.source_section_id,
+              chunk_index=EXCLUDED.chunk_index,source_is_heading=EXCLUDED.source_is_heading,
               heading_path=EXCLUDED.heading_path,section_role=EXCLUDED.section_role,
               module_code=EXCLUDED.module_code,clean_text=EXCLUDED.clean_text,
               reuse_class=EXCLUDED.reuse_class,quality_level=EXCLUDED.quality_level,
@@ -206,6 +243,13 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
               prerequisites=EXCLUDED.prerequisites,variable_slots=EXCLUDED.variable_slots,
               forbidden_terms=EXCLUDED.forbidden_terms,length_band=EXCLUDED.length_band,
               review_status=EXCLUDED.review_status,text_hash=EXCLUDED.text_hash,
+              content_type=EXCLUDED.content_type,
+              semantic_section=EXCLUDED.semantic_section,
+              content_slot=EXCLUDED.content_slot,
+              source_order=EXCLUDED.source_order,
+              adaptation_mode=EXCLUDED.adaptation_mode,
+              assessment_targets=EXCLUDED.assessment_targets,
+              construction_scope_tags=EXCLUDED.construction_scope_tags,
               updated_at=NOW()
             """,
             block_rows,
@@ -310,6 +354,8 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
         "blocks_published": row_counts["approved_corpus_blocks"] if publish else 0,
         "blocks_prohibited": len(corpus["blocks"]) - row_counts["approved_corpus_blocks"],
         "capabilities_imported": len(payload["capabilities"]),
+        "package_kind": contract["package_kind"],
+        "source_corpus_type": corpus.get("source_corpus_type", ""),
         "retired_package_count": retired_package_count,
         "import_run_id": import_run_id,
         "applied_migrations": migrations,

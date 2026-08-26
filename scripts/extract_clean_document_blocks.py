@@ -15,6 +15,7 @@ from xml.etree import ElementTree as ET
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": W_NS}
+CLEANING_VERSION = "v2"
 
 
 def qn(local: str) -> str:
@@ -52,11 +53,39 @@ def paragraph_text(paragraph: ET.Element) -> str:
     return clean_text("".join(pieces))
 
 
-def heading_level(paragraph: ET.Element) -> int | None:
+def load_style_levels(package: zipfile.ZipFile) -> dict[str, int]:
+    try:
+        root = ET.fromstring(package.read("word/styles.xml"))
+    except KeyError:
+        return {}
+    levels: dict[str, int] = {}
+    for style in root.findall("w:style", NS):
+        style_id = style.get(qn("styleId"), "")
+        outline = style.find("w:pPr/w:outlineLvl", NS)
+        if outline is not None:
+            raw = outline.get(qn("val"), "")
+            if raw.isdigit() and 0 <= int(raw) <= 8:
+                levels[style_id] = int(raw) + 1
+                continue
+        name = style.find("w:name", NS)
+        candidates = [style_id, name.get(qn("val"), "") if name is not None else ""]
+        for candidate in candidates:
+            match = re.search(r"(?:heading|标题)\s*([1-9])", candidate, flags=re.IGNORECASE)
+            if match:
+                levels[style_id] = int(match.group(1))
+                break
+    return levels
+
+
+def heading_level(paragraph: ET.Element, style_levels: dict[str, int]) -> int | None:
+    direct = paragraph.find("w:pPr/w:outlineLvl", NS)
+    if direct is not None:
+        raw = direct.get(qn("val"), "")
+        if raw.isdigit() and 0 <= int(raw) <= 8:
+            return int(raw) + 1
     style = paragraph.find("w:pPr/w:pStyle", NS)
     style_id = style.get(qn("val"), "") if style is not None else ""
-    match = re.search(r"(?:heading|标题)\s*([1-9])", style_id, flags=re.IGNORECASE)
-    return int(match.group(1)) if match else None
+    return style_levels.get(style_id)
 
 
 def table_text(table: ET.Element) -> str:
@@ -69,6 +98,7 @@ def table_text(table: ET.Element) -> str:
 
 def docx_blocks(path: Path) -> list[dict[str, object]]:
     with zipfile.ZipFile(path) as package:
+        style_levels = load_style_levels(package)
         document = ET.fromstring(package.read("word/document.xml"))
     body = document.find("w:body", NS)
     if body is None:
@@ -84,7 +114,7 @@ def docx_blocks(path: Path) -> list[dict[str, object]]:
             text = paragraph_text(child)
             if not text:
                 continue
-            level = heading_level(child)
+            level = heading_level(child, style_levels)
             if level is not None:
                 headings = headings[: level - 1]
                 headings.append(text)
@@ -94,6 +124,7 @@ def docx_blocks(path: Path) -> list[dict[str, object]]:
             blocks.append(
                 {
                     "block_type": block_type,
+                    "heading_level": level,
                     "heading_path": headings.copy(),
                     "source_location": f"paragraph:{paragraph_index}",
                     "clean_text": text,
@@ -170,7 +201,7 @@ def build_payload(path: Path, project_code: str, title: str, contains_personal_d
     else:
         raise ValueError("Only DOCX, Markdown, and TXT files are supported")
 
-    document_id = stable_id("DOC", project_code, source_hash)
+    document_id = stable_id("DOC", project_code, source_hash, CLEANING_VERSION)
     for index, block in enumerate(blocks, start=1):
         block["block_id"] = stable_id("BLOCK", document_id, index, block["clean_text"])
         block["block_index"] = index
@@ -184,8 +215,8 @@ def build_payload(path: Path, project_code: str, title: str, contains_personal_d
             "source_path": str(path.resolve()),
             "source_sha256": source_hash,
             "source_type": source_type,
-            "cleaning_version": "v1",
-            "cleaning_method": "unicode-normalization + whitespace-normalization + source-block-extraction",
+            "cleaning_version": CLEANING_VERSION,
+            "cleaning_method": "unicode-normalization + whitespace-normalization + styles-aware-heading-extraction",
             "contains_personal_data": contains_personal_data,
             "metadata": {"block_count": len(blocks)},
         },

@@ -45,6 +45,8 @@ def validate_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict
 
 
 def section_role(block: dict[str, Any]) -> str:
+    if str(block.get("section_role") or "").strip():
+        return str(block["section_role"])
     heading_path = block.get("heading_path")
     if isinstance(heading_path, list) and heading_path:
         return str(heading_path[-1])
@@ -158,14 +160,15 @@ def ingest_payload(
             """
             INSERT INTO corpus_document (
               corpus_document_id, source_id, document_type, jurisdiction_code,
-              project_type, quality_level, permission_scope, review_status,
+              project_type, source_corpus_type, quality_level, permission_scope, review_status,
               version, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(corpus_document_id) DO UPDATE SET
               source_id=excluded.source_id,
               document_type=excluded.document_type,
               jurisdiction_code=excluded.jurisdiction_code,
               project_type=excluded.project_type,
+              source_corpus_type=excluded.source_corpus_type,
               quality_level=excluded.quality_level,
               permission_scope=excluded.permission_scope,
               version=excluded.version,
@@ -174,9 +177,10 @@ def ingest_payload(
             (
                 corpus_document_id,
                 source_id,
-                project["document_type"],
+                document.get("document_type", project["document_type"]),
                 project["jurisdiction_code"],
-                project["project_type"],
+                document.get("project_type", project["project_type"]),
+                document.get("source_corpus_type", "legacy_unspecified"),
                 quality_level,
                 permission_scope,
                 review_status,
@@ -194,8 +198,11 @@ def ingest_payload(
                   module_code, clean_text, reuse_class, quality_level,
                   applicable_document_types_json, applicable_project_types_json,
                   prerequisites_json, variable_slots_json, forbidden_terms_json,
-                  length_band, review_status, text_hash, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  length_band, review_status, text_hash, created_at, updated_at,
+                  heading_path_json, content_type, semantic_section, content_slot,
+                  source_order, adaptation_mode, assessment_targets_json,
+                  construction_scope_tags_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(block_id) DO UPDATE SET
                   corpus_document_id=excluded.corpus_document_id,
                   source_location=excluded.source_location,
@@ -206,6 +213,17 @@ def ingest_payload(
                   quality_level=excluded.quality_level,
                   applicable_document_types_json=excluded.applicable_document_types_json,
                   applicable_project_types_json=excluded.applicable_project_types_json,
+                  prerequisites_json=excluded.prerequisites_json,
+                  variable_slots_json=excluded.variable_slots_json,
+                  forbidden_terms_json=excluded.forbidden_terms_json,
+                  heading_path_json=excluded.heading_path_json,
+                  content_type=excluded.content_type,
+                  semantic_section=excluded.semantic_section,
+                  content_slot=excluded.content_slot,
+                  source_order=excluded.source_order,
+                  adaptation_mode=excluded.adaptation_mode,
+                  assessment_targets_json=excluded.assessment_targets_json,
+                  construction_scope_tags_json=excluded.construction_scope_tags_json,
                   text_hash=excluded.text_hash,
                   updated_at=excluded.updated_at
                 """,
@@ -214,20 +232,28 @@ def ingest_payload(
                     corpus_document_id,
                     str(block["source_location"]),
                     section_role(block),
-                    "",
+                    str(block.get("module_code", "")),
                     str(block["clean_text"]),
-                    reuse_class,
-                    quality_level,
-                    dump_json([project["document_type"]]),
-                    dump_json([project["project_type"]]),
-                    "[]",
-                    "[]",
-                    "[]",
+                    str(block.get("reuse_class", reuse_class)),
+                    str(block.get("quality_level", quality_level)),
+                    dump_json(block.get("applicable_document_types", [document.get("document_type", project["document_type"])])),
+                    dump_json(block.get("applicable_project_types", [document.get("project_type", project["project_type"])])),
+                    dump_json(block.get("prerequisites", [])),
+                    dump_json(block.get("variable_slots", [])),
+                    dump_json(block.get("forbidden_terms", [])),
                     str(block.get("length_band", "")),
-                    review_status,
+                    str(block.get("review_status", review_status)),
                     str(block["clean_text_sha256"]),
                     timestamp,
                     timestamp,
+                    dump_json(block.get("heading_path", [])),
+                    str(block.get("content_type", "legacy_unspecified")),
+                    str(block.get("semantic_section", "")),
+                    str(block.get("content_slot", "")),
+                    int(block.get("source_order", block.get("block_index", 0))),
+                    str(block.get("adaptation_mode", "structure_only")),
+                    dump_json(block.get("assessment_targets", [])),
+                    dump_json(block.get("construction_scope_tags", [])),
                 ),
             )
         conn.commit()

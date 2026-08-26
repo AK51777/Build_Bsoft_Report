@@ -16,10 +16,17 @@ from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
 
+from standard_solution_coverage import (
+    COVERAGE_KEY,
+    audit_standard_solution_coverage,
+    build_source_section_manifest,
+    require_complete_standard_solution_coverage,
+)
+
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": W_NS}
-BUILDER_VERSION = "3.0"
+BUILDER_VERSION = "3.1"
 
 
 def qn(local: str) -> str:
@@ -176,13 +183,9 @@ def capability_block_ids(
     return [], "unmatched"
 
 
-def chunk_solution(
-    path: Path,
-    module_index: list[tuple[str, str]],
-    *,
-    min_chars: int = 120,
-    max_chars: int = 1800,
-) -> list[dict[str, Any]]:
+def extract_solution_sections(path: Path) -> list[dict[str, Any]]:
+    """Extract every heading occurrence and its direct body without length filtering."""
+    source_hash = sha256_bytes(path.read_bytes())
     with zipfile.ZipFile(path) as package:
         style_levels = read_style_levels(package)
         document = ET.fromstring(package.read("word/document.xml"))
@@ -190,10 +193,28 @@ def chunk_solution(
     if body is None:
         raise ValueError("DOCX does not contain a document body")
     headings: list[str] = []
-    buffers: dict[tuple[str, ...], list[str]] = {}
-    locations: dict[tuple[str, ...], list[str]] = {}
+    sections: list[dict[str, Any]] = []
+    current_section: dict[str, Any] | None = None
     paragraph_index = 0
     table_index = 0
+
+    def new_section(
+        heading_path: list[str], source_location: str, *, source_is_heading: bool
+    ) -> dict[str, Any]:
+        source_order = len(sections) + 1
+        section = {
+            "source_section_id": stable_id(
+                "STDSECTION", source_hash, source_order, source_location, heading_path
+            ),
+            "source_order": source_order,
+            "source_location": source_location,
+            "heading_path": list(heading_path),
+            "source_is_heading": source_is_heading,
+            "pieces": [],
+        }
+        sections.append(section)
+        return section
+
     for child in body:
         if child.tag == qn("p"):
             paragraph_index += 1
@@ -204,75 +225,116 @@ def chunk_solution(
             if level is not None:
                 headings = headings[: level - 1]
                 headings.append(text)
+                current_section = new_section(
+                    headings, f"paragraph:{paragraph_index}", source_is_heading=True
+                )
                 continue
-            key = tuple(headings)
-            buffers.setdefault(key, []).append(text)
-            locations.setdefault(key, []).append(f"paragraph:{paragraph_index}")
+            if current_section is None:
+                current_section = new_section(
+                    headings, f"paragraph:{paragraph_index}", source_is_heading=False
+                )
+            current_section["pieces"].append(text)
         elif child.tag == qn("tbl"):
             table_index += 1
             text = table_text(child)
             if text:
-                key = tuple(headings)
-                buffers.setdefault(key, []).append(text)
-                locations.setdefault(key, []).append(f"table:{table_index}")
+                if current_section is None:
+                    current_section = new_section(
+                        headings, f"table:{table_index}", source_is_heading=False
+                    )
+                current_section["pieces"].append(text)
 
-    source_hash = sha256_bytes(path.read_bytes())
+    for section in sections:
+        section["clean_text"] = clean_text("\n\n".join(section.pop("pieces")))
+    return sections
+
+
+def blocks_from_solution_sections(
+    sections: list[dict[str, Any]],
+    module_index: list[tuple[str, str]],
+    *,
+    max_chars: int = 1800,
+) -> list[dict[str, Any]]:
+    """Chunk sections without dropping short tails or heading-only structure nodes."""
+    if max_chars < 1:
+        raise ValueError("max_chars must be greater than zero")
+
     blocks: list[dict[str, Any]] = []
-    for heading_tuple, pieces in buffers.items():
-        heading_path = list(heading_tuple)
+    for section in sections:
+        heading_path = list(section.get("heading_path", []))
+        pieces = str(section.get("clean_text", "")).split("\n\n") if section.get("clean_text") else []
         current: list[str] = []
         current_chars = 0
         chunk_no = 0
+
+        def emit(chunk_text: str) -> None:
+            nonlocal chunk_no
+            chunk_no += 1
+            text = clean_text(chunk_text)
+            role = section_role(heading_path)
+            reuse_class, review_status = reuse_policy(role, text)
+            content_type = "structure_only" if not text else (
+                "construction_solution" if role == "construction_content" else "common_narrative"
+            )
+            text_hash = sha256_bytes(text.encode("utf-8"))
+            blocks.append(
+                {
+                    "block_id": stable_id(
+                        "STDBLOCK", section["source_section_id"], chunk_no, text_hash
+                    ),
+                    "source_section_id": section["source_section_id"],
+                    "source_order": section["source_order"],
+                    "chunk_index": chunk_no,
+                    "source_location": section["source_location"],
+                    "source_is_heading": section["source_is_heading"],
+                    "heading_path": heading_path,
+                    "section_role": role,
+                    "module_code": match_module(heading_path, module_index),
+                    "clean_text": text,
+                    "text_hash": text_hash,
+                    "visible_text_hash": text_hash,
+                    "content_type": content_type,
+                    "content_format": "plain_text",
+                    "content_payload": {},
+                    "asset_manifest": [],
+                    "length_band": "empty" if not text else (
+                        "short" if len(text) < 120 else "medium" if len(text) <= max_chars else "long"
+                    ),
+                    "reuse_class": reuse_class,
+                    "quality_level": "B",
+                    "review_status": review_status,
+                    "prerequisites": [],
+                    "variable_slots": [],
+                    "forbidden_terms": ["创业慧康", "Bsoft", "我司"],
+                }
+            )
+
         for piece in pieces:
             if current and current_chars + len(piece) > max_chars:
-                chunk_no += 1
-                text = clean_text("\n\n".join(current))
-                if len(text) >= min_chars:
-                    role = section_role(heading_path)
-                    reuse_class, review_status = reuse_policy(role, text)
-                    blocks.append(
-                        {
-                            "block_id": stable_id("STDBLOCK", source_hash, heading_path, chunk_no, text),
-                            "source_location": locations[heading_tuple][0],
-                            "heading_path": heading_path,
-                            "section_role": role,
-                            "module_code": match_module(heading_path, module_index),
-                            "clean_text": text,
-                            "reuse_class": reuse_class,
-                            "quality_level": "B",
-                            "review_status": review_status,
-                            "prerequisites": [],
-                            "variable_slots": [],
-                            "forbidden_terms": ["创业慧康", "Bsoft", "我司"],
-                        }
-                    )
+                emit("\n\n".join(current))
                 current = []
                 current_chars = 0
             current.append(piece)
             current_chars += len(piece)
         if current:
-            chunk_no += 1
-            text = clean_text("\n\n".join(current))
-            if len(text) >= min_chars:
-                role = section_role(heading_path)
-                reuse_class, review_status = reuse_policy(role, text)
-                blocks.append(
-                    {
-                        "block_id": stable_id("STDBLOCK", source_hash, heading_path, chunk_no, text),
-                        "source_location": locations[heading_tuple][0],
-                        "heading_path": heading_path,
-                        "section_role": role,
-                        "module_code": match_module(heading_path, module_index),
-                        "clean_text": text,
-                        "reuse_class": reuse_class,
-                        "quality_level": "B",
-                        "review_status": review_status,
-                        "prerequisites": [],
-                        "variable_slots": [],
-                        "forbidden_terms": ["创业慧康", "Bsoft", "我司"],
-                    }
-                )
+            emit("\n\n".join(current))
+        elif not pieces:
+            emit("")
     return blocks
+
+
+def chunk_solution(
+    path: Path,
+    module_index: list[tuple[str, str]],
+    *,
+    min_chars: int = 1,
+    max_chars: int = 1800,
+) -> list[dict[str, Any]]:
+    """Backward-compatible entry point; min_chars is classification-only, never a filter."""
+    if min_chars < 0:
+        raise ValueError("min_chars cannot be negative")
+    sections = extract_solution_sections(path)
+    return blocks_from_solution_sections(sections, module_index, max_chars=max_chars)
 
 
 def workbook_capabilities(path: Path) -> list[dict[str, Any]]:
@@ -357,7 +419,44 @@ def build_pack(solution: Path, scope: Path, *, title: str = "") -> dict[str, Any
             key = normalized_key(name)
             if key:
                 module_index.append((key, capability["product_code"]))
-    blocks = chunk_solution(solution, module_index)
+    sections = extract_solution_sections(solution)
+    blocks = blocks_from_solution_sections(sections, module_index)
+    semantic_by_role = {
+        "construction_content": "application_software_solution",
+        "overall_design": "technical_route",
+        "implementation_operation": "implementation_operation",
+        "benefit_performance": "construction_benefit",
+        "necessity_feasibility": "necessity_feasibility",
+        "problem_need": "requirements_analysis",
+        "current_state": "project_background",
+        "policy": "policy_basis",
+    }
+    adaptation_by_reuse = {
+        "A": "direct",
+        "B": "parameterized",
+        "C": "structure_only",
+        "D": "prohibited",
+    }
+    for block in blocks:
+        block["source_corpus_type"] = "standard_solution"
+        block["content_type"] = (
+            "structure_only" if not block["clean_text"] else "construction_solution"
+        )
+        block["semantic_section"] = semantic_by_role.get(
+            block["section_role"], "application_software_solution"
+        )
+        block["content_slot"] = block.get("module_code") or block["section_role"]
+        block["adaptation_mode"] = (
+            "structure_only"
+            if not block["clean_text"]
+            else adaptation_by_reuse[block["reuse_class"]]
+        )
+        block["assessment_targets"] = []
+        block["construction_scope_tags"] = (
+            [block["module_code"]] if block.get("module_code") else []
+        )
+    source_sections = build_source_section_manifest(sections, blocks)
+    coverage = audit_standard_solution_coverage(source_sections, blocks)
     for capability in capabilities:
         block_ids, match_scope = capability_block_ids(capability, blocks)
         capability["standard_block_ids"] = block_ids
@@ -369,8 +468,8 @@ def build_pack(solution: Path, scope: Path, *, title: str = "") -> dict[str, Any
     package_id = stable_id(
         "STANDARDPACK", BUILDER_VERSION, source_hashes["solution"], source_hashes["scope"]
     )
-    return {
-        "schema_version": "1.0",
+    result = {
+        "schema_version": "1.1",
         "builder_version": BUILDER_VERSION,
         "package_id": package_id,
         "title": title or solution.stem,
@@ -383,8 +482,10 @@ def build_pack(solution: Path, scope: Path, *, title: str = "") -> dict[str, Any
             "document_id": stable_id("STDDOC", source_hashes["solution"]),
             "document_type": "feasibility_study",
             "project_type": "hospital_informationization",
+            "source_corpus_type": "standard_solution",
             "quality_level": "B",
             "review_status": "approved",
+            "source_sections": source_sections,
             "blocks": blocks,
         },
         "capabilities": capabilities,
@@ -399,8 +500,11 @@ def build_pack(solution: Path, scope: Path, *, title: str = "") -> dict[str, Any
                 not capability["standard_block_ids"] for capability in capabilities
             ),
             "policy_blocks_prohibited": sum(block["section_role"] == "policy" for block in blocks),
+            COVERAGE_KEY: coverage,
         },
     }
+    require_complete_standard_solution_coverage(result, context="新生成的标准知识包")
+    return result
 
 
 def main() -> int:

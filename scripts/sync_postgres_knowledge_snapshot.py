@@ -15,6 +15,11 @@ from ingest_policies import ingest as ingest_local_policies
 from knowledge_db import apply_migrations, connect as connect_sqlite, dump_json, now_iso, sha256_text, stable_id
 from knowledge_snapshot import snapshot_payload_hash, validate_snapshots
 from postgres_knowledge_db import add_connection_arguments, canonical_json, connect as connect_postgres, validate_schema
+from standard_solution_coverage import (
+    COVERAGE_KEY,
+    audit_standard_solution_coverage,
+    require_complete_standard_solution_coverage,
+)
 
 
 def iso_value(value: Any) -> str:
@@ -234,9 +239,27 @@ def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dic
                 (capability_ids,),
             )
             relations = fetch_dicts(cursor)
-    relation_map: dict[str, list[str]] = {}
+    relation_map: dict[str, list[dict[str, Any]]] = {}
     for relation in relations:
-        relation_map.setdefault(relation["capability_id"], []).append(relation["block_id"])
+        relation_map.setdefault(relation["capability_id"], []).append(
+            {
+                "block_id": relation["block_id"],
+                "relation_type": relation.get("relation_type", "standard_description"),
+                "priority": int(relation.get("priority") or 0),
+                "review_status": relation.get("review_status", "approved"),
+                "root_heading_path": relation.get("root_heading_path", []),
+                "relation_order": int(relation.get("relation_order") or 0),
+                "verbatim_eligible": bool(relation.get("verbatim_eligible", True)),
+            }
+        )
+    for capability_relations in relation_map.values():
+        capability_relations.sort(
+            key=lambda item: (
+                item["relation_order"],
+                item["priority"],
+                item["block_id"],
+            )
+        )
     source_files = [
         {
             "role": source["source_role"],
@@ -245,9 +268,17 @@ def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dic
         }
         for source in sources
     ]
+    source_corpus_type = str(document.get("source_corpus_type") or "")
+    if source_corpus_type in {"", "legacy_unspecified"} and any(
+        source.get("source_role") == "standard_solution" for source in sources
+    ):
+        source_corpus_type = "standard_solution"
     block_payload = [
         {
             "block_id": block["block_id"],
+            "source_section_id": block.get("source_section_id", ""),
+            "chunk_index": int(block.get("chunk_index") or 0),
+            "source_is_heading": bool(block.get("source_is_heading", False)),
             "source_location": block["source_location"],
             "heading_path": block["heading_path"],
             "section_role": block["section_role"],
@@ -261,6 +292,17 @@ def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dic
             "forbidden_terms": block["forbidden_terms"],
             "length_band": block["length_band"],
             "text_hash": block["text_hash"],
+            "content_type": block.get("content_type", "legacy_unspecified"),
+            "semantic_section": block.get("semantic_section", ""),
+            "content_slot": block.get("content_slot", ""),
+            "source_order": int(block.get("source_order") or block.get("block_index") or 0),
+            "adaptation_mode": block.get("adaptation_mode", "structure_only"),
+            "assessment_targets": block.get("assessment_targets", []),
+            "construction_scope_tags": block.get("construction_scope_tags", []),
+            "content_format": block.get("content_format", "plain_text"),
+            "content_payload": block.get("content_payload", {}),
+            "asset_manifest": block.get("asset_manifest", []),
+            "visible_text_hash": block.get("visible_text_hash", block["text_hash"]),
         }
         for block in blocks
     ]
@@ -278,16 +320,49 @@ def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dic
             "interface_dependencies": capability["interface_dependencies"],
             "exclusions": capability["exclusions"],
             "applicable_versions": capability["applicable_versions"],
-            "standard_block_ids": relation_map.get(capability["capability_id"], []),
+            "standard_block_ids": [
+                relation["block_id"]
+                for relation in relation_map.get(capability["capability_id"], [])
+            ],
+            "standard_block_relations": relation_map.get(capability["capability_id"], []),
             "block_match_scope": capability.get("block_match_scope", ""),
             "review_status": "approved",
             "source_location": capability["source_location"],
         }
         for capability in capabilities
     ]
+    review_summary = dict(package.get("review_summary") or {})
+    runtime_source_sections: list[dict[str, Any]] = []
+    if source_corpus_type == "standard_solution":
+        require_complete_standard_solution_coverage(
+            review_summary, context=f"服务器发布包 {package_id}"
+        )
+        all_source_sections = (document.get("metadata") or {}).get("source_sections", [])
+        runtime_block_ids = {block["block_id"] for block in block_payload}
+        runtime_source_sections = [
+            section
+            for section in all_source_sections
+            if section.get("expected_block_ids")
+            and set(section.get("expected_block_ids", [])).issubset(runtime_block_ids)
+        ]
+        runtime_coverage = audit_standard_solution_coverage(
+            runtime_source_sections, block_payload
+        )
+        review_summary = {
+            **review_summary,
+            "source_package_standard_solution_coverage": review_summary.get(
+                COVERAGE_KEY, {}
+            ),
+            COVERAGE_KEY: runtime_coverage,
+        }
     return {
         "schema_version": package["schema_version"],
         "package_id": package_id,
+        "package_kind": (
+            "standard_solution"
+            if source_corpus_type == "standard_solution"
+            else "reference_corpus"
+        ),
         "title": package["title"],
         "permission_scope": package["permission_scope"],
         "source_files": source_files,
@@ -295,13 +370,15 @@ def build_pack_snapshot(connection, schema: str, package: dict[str, Any]) -> dic
             "document_id": document["corpus_document_id"],
             "document_type": document["document_type"],
             "project_type": document["project_type"],
+            "source_corpus_type": source_corpus_type or "legacy_unspecified",
             "version": document.get("version", ""),
             "quality_level": document["quality_level"],
             "review_status": "approved",
+            "source_sections": runtime_source_sections,
             "blocks": block_payload,
         },
         "capabilities": capability_payload,
-        "review_summary": package["review_summary"],
+        "review_summary": review_summary,
         "server_content_hash": package["content_hash"],
     }
 
@@ -655,9 +732,19 @@ def sync(
     )
     for package in packages:
         payload = build_pack_snapshot(connection, schema, package)
-        if not payload["corpus"]["blocks"] or not payload["capabilities"]:
+        source_corpus_type = payload["corpus"].get(
+            "source_corpus_type", "legacy_unspecified"
+        )
+        requires_capabilities = source_corpus_type == "standard_solution"
+        if not payload["corpus"]["blocks"] or (
+            requires_capabilities and not payload["capabilities"]
+        ):
             raise ValueError(
-                f"knowledge package {payload['package_id']} has zero corpus blocks or capabilities"
+                f"knowledge package {payload['package_id']} does not satisfy its corpus/capability contract"
+            )
+        if requires_capabilities:
+            require_complete_standard_solution_coverage(
+                payload, context=f"服务器标准知识包 {payload['package_id']}"
             )
         local_result = import_local_pack(database, payload)
         items = [
@@ -684,6 +771,9 @@ def sync(
                 "title": payload["title"],
                 "blocks": len(payload["corpus"]["blocks"]),
                 "capabilities": len(payload["capabilities"]),
+                "package_kind": payload["package_kind"],
+                "source_corpus_type": source_corpus_type,
+                "review_summary": payload.get("review_summary", {}),
             },
             permission_scope=payload["permission_scope"],
             profile_name=profile_name,

@@ -80,7 +80,8 @@ class PolicySectionMaterialTests(unittest.TestCase):
             self.assertFalse(working["delivery_eligible"])
             first = working["background_paragraphs"][0]
             self.assertTrue(first["clause_ids"])
-            self.assertIn("经核验的相关条款主要包括", first["text"])
+            self.assertIn("文件中与本项目相关的要求包括", first["text"])
+            self.assertNotIn("经核验的相关条款主要包括", first["text"])
             self.assertTrue(first["text_hash"])
             with self.assertRaisesRegex(ValueError, "unconfirmed"):
                 build_material(database, "POLICY-MATERIAL-001", mode="delivery")

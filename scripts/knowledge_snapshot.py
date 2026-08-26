@@ -156,8 +156,31 @@ def validate_snapshots(
             elif stored_payload_hash != computed_payload_hash:
                 reasons.append("snapshot aggregate payload hash mismatch")
             if row["source_type"] == "knowledge_package":
-                if counts.get("corpus_block", 0) < 1 or counts.get("product_capability", 0) < 1:
-                    reasons.append("knowledge package snapshot has zero corpus blocks or capabilities")
+                source_corpus_type = str(
+                    metadata.get("source_corpus_type") or "legacy_unspecified"
+                )
+                if (
+                    source_corpus_type == "legacy_unspecified"
+                    and counts.get("product_capability", 0) > 0
+                ):
+                    source_corpus_type = "standard_solution"
+                if counts.get("corpus_block", 0) < 1:
+                    reasons.append("knowledge package snapshot has zero corpus blocks")
+                if (
+                    source_corpus_type == "standard_solution"
+                    and counts.get("product_capability", 0) < 1
+                ):
+                    reasons.append(
+                        "standard_solution snapshot has zero product capabilities"
+                    )
+                if source_corpus_type not in {
+                    "standard_solution",
+                    "reference_feasibility",
+                    "generic_reference",
+                }:
+                    reasons.append(
+                        "knowledge package snapshot lacks a supported source_corpus_type marker"
+                    )
             elif row["source_type"] == "policy_catalog" and counts.get("policy_catalog_entry", 0) < 1:
                 reasons.append("policy catalog snapshot has zero records")
             elif row["source_type"] == "policy_release" and counts.get("policy_clause", 0) < 1:
@@ -177,6 +200,9 @@ def validate_snapshots(
                 "snapshot_status": row["snapshot_status"],
                 "synced_at": row["fetched_at"],
                 "permission_scope": permission,
+                "source_corpus_type": str(
+                    metadata.get("source_corpus_type") or ""
+                ),
                 "counts": counts,
                 "valid": not reasons,
                 "problems": reasons,

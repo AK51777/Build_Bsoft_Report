@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import sqlite3
 import sys
 import tempfile
@@ -17,7 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from apply_scope_capability_decisions import apply_decisions  # noqa: E402
 from build_section_composition_plan import build_composition_plan  # noqa: E402
-from build_standard_knowledge_pack import build_pack  # noqa: E402
+from build_standard_knowledge_pack import build_pack, chunk_solution  # noqa: E402
 from build_standard_knowledge_pack import section_role  # noqa: E402
 from export_section_task_packages import export_packages  # noqa: E402
 from import_standard_knowledge_pack import import_pack  # noqa: E402
@@ -52,6 +53,64 @@ def make_standard_files(root: Path) -> tuple[Path, Path]:
 
 
 class StandardKnowledgePackTests(unittest.TestCase):
+    def test_short_empty_duplicate_and_short_tail_sections_are_lossless_and_gated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solution = root / "lossless-standard.docx"
+            document = Document()
+            document.add_heading("建设内容", level=1)
+            document.add_heading("临床字典管理", level=2)
+            document.add_paragraph("短正文必须保留。")
+            document.add_heading("仅结构标题", level=2)
+            document.add_heading("重复模块", level=2)
+            document.add_paragraph("第一次同名路径正文。")
+            document.add_heading("重复模块", level=2)
+            document.add_paragraph("第二次同名路径正文。")
+            document.add_heading("长段拆分", level=2)
+            document.add_paragraph("甲" * 80)
+            document.add_paragraph("乙" * 80)
+            document.add_paragraph("短尾不能丢。")
+            document.save(solution)
+
+            scope = root / "scope.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["大类", "系统名称", "模块名称", "产品功能"])
+            sheet.append(["平台", "医院信息平台", "临床字典管理", "临床字典管理"])
+            workbook.save(scope)
+
+            blocks = chunk_solution(solution, [], min_chars=120, max_chars=100)
+            self.assertIn("短正文必须保留。", [block["clean_text"] for block in blocks])
+            self.assertTrue(any("短尾不能丢。" in block["clean_text"] for block in blocks))
+            structure = next(block for block in blocks if block["heading_path"][-1:] == ["仅结构标题"])
+            self.assertEqual(structure["clean_text"], "")
+            duplicate_blocks = [block for block in blocks if block["heading_path"][-1:] == ["重复模块"]]
+            self.assertEqual(len(duplicate_blocks), 2)
+            self.assertNotEqual(duplicate_blocks[0]["source_section_id"], duplicate_blocks[1]["source_section_id"])
+
+            payload = build_pack(solution, scope, title="无损抽取测试")
+            coverage = payload["review_summary"]["standard_solution_coverage"]
+            self.assertEqual(coverage["status"], "pass")
+            self.assertEqual(coverage["source_section_count"], coverage["emitted_section_count"])
+            self.assertEqual(coverage["source_heading_count"], coverage["emitted_heading_count"])
+            self.assertEqual(
+                coverage["short_nonempty_section_count"],
+                coverage["short_nonempty_sections_preserved"],
+            )
+            self.assertEqual(
+                coverage["empty_heading_section_count"],
+                coverage["empty_heading_sections_preserved"],
+            )
+
+            tampered = copy.deepcopy(payload)
+            tampered["corpus"]["blocks"] = [
+                block
+                for block in tampered["corpus"]["blocks"]
+                if block["heading_path"][-1:] != ["临床字典管理"]
+            ]
+            with self.assertRaisesRegex(ValueError, "完整导入门禁"):
+                import_pack(root / "tampered.sqlite", tampered)
+
     def test_build_import_map_and_recall_are_bounded_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -68,6 +127,18 @@ class StandardKnowledgePackTests(unittest.TestCase):
             self.assertTrue(policy_blocks)
             self.assertTrue(all(block["review_status"] == "prohibited" for block in policy_blocks))
             self.assertTrue(payload["capabilities"][0]["standard_block_ids"])
+            capability = payload["capabilities"][0]
+            capability["standard_block_relations"] = [
+                {
+                    "block_id": capability["standard_block_ids"][0],
+                    "relation_type": "standard_description",
+                    "priority": 1,
+                    "review_status": "approved",
+                    "root_heading_path": ["建设内容", "电子病历系统"],
+                    "relation_order": 1,
+                    "verbatim_eligible": True,
+                }
+            ]
 
             initialized = initialize_project(
                 root / "project", project_code="PACK-TEST-001",
@@ -77,6 +148,19 @@ class StandardKnowledgePackTests(unittest.TestCase):
             first = import_pack(database, payload)
             second = import_pack(database, payload)
             self.assertEqual(first["blocks_imported"], second["blocks_imported"])
+            self.assertEqual(first["capability_block_relations_imported"], 1)
+            conn = sqlite3.connect(database)
+            try:
+                relation = conn.execute(
+                    """
+                    SELECT root_heading_path_json,relation_order,verbatim_eligible
+                    FROM capability_solution_block_relation
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertEqual(json.loads(relation[0]), ["建设内容", "电子病历系统"])
+            self.assertEqual(relation[1:], (1, 1))
 
             ingest_scope_payload(
                 database,

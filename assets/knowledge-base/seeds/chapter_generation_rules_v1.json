@@ -1,0 +1,172 @@
+{
+  "schema_version": "1.0",
+  "global": {
+    "forbidden_output_phrases": [
+      "经核验的相关条款主要包括",
+      "正式报审前还需复核",
+      "不得把指导、鼓励或评价性内容改写为项目已经完成的事实",
+      "事实台账",
+      "章节复核",
+      "进入下一轮深化时",
+      "新增材料应按来源",
+      "只有目录标题而没有官方原文"
+    ],
+    "completion_checks": [
+      "仅使用章节任务包绑定的事实、范围、政策、能力和语料",
+      "工作层来源标记不得转化为面向客户的编制过程说明",
+      "未通过当前章节校验的版本不得采纳"
+    ],
+    "validation": {
+      "require_task_package_boundary": true
+    }
+  },
+  "roles": {
+    "project_overview": {
+      "argument_outline": ["项目定位与编制边界", "建设范围分类", "建设方式与依赖", "验收与决策边界"],
+      "assembly_mode": "fact_scope_argument",
+      "required_source_types": ["fact", "scope"]
+    },
+    "basis": {
+      "argument_outline": ["国家政策法规", "行业标准与评价规范", "政策条款与本项目关系", "适用性及有效性边界"],
+      "assembly_mode": "verified_policy_material",
+      "required_source_types": ["policy"]
+    },
+    "current_state": {
+      "argument_outline": ["资料边界与核实口径", "业务运行现状", "应用系统现状", "数据接口与基础环境", "待核实事项"],
+      "assembly_mode": "fact_argument",
+      "required_source_types": ["fact"]
+    },
+    "problem_need": {
+      "argument_outline": ["证据支持的问题表现", "成因与影响链", "建设需求响应", "范围承载与优先关系"],
+      "assembly_mode": "traceability_argument",
+      "required_source_types": ["fact", "scope"]
+    },
+    "necessity_feasibility": {
+      "argument_outline": ["政策必要性", "业务必要性", "技术可行性", "数据与安全可行性", "实施条件与约束"],
+      "assembly_mode": "knowledge_fact_argument",
+      "required_source_types": ["fact", "scope", "policy", "corpus"]
+    },
+    "overall_design": {
+      "argument_outline": ["建设原则", "总体目标", "业务与应用架构", "数据与集成架构", "技术与安全架构", "验收闭环"],
+      "assembly_mode": "knowledge_scope_argument",
+      "required_source_types": ["scope", "policy", "corpus"]
+    },
+    "construction_content": {
+      "argument_outline": ["客户清单范围", "能力映射", "功能流程", "数据接口", "安全控制", "验收取证"],
+      "assembly_mode": "scope_capability_standard_blocks",
+      "required_source_types": ["scope", "capability", "corpus"],
+      "validation": {
+        "require_scope_coverage": true,
+        "require_dynamic_outline": true
+      }
+    },
+    "implementation_operation": {
+      "argument_outline": ["项目治理与组织分工", "阶段计划与成果物", "配置和开发管理", "数据迁移", "测试与上线切换", "培训与知识转移", "运维服务与SLA", "质量安全和变更控制"],
+      "assembly_mode": "knowledge_scope_argument",
+      "required_source_types": ["scope", "corpus"]
+    },
+    "investment_funding": {
+      "argument_outline": ["估算范围与口径", "范围和费用映射", "计价依据与复核", "资金来源和年度安排", "概算变更控制"],
+      "assembly_mode": "fact_scope_calculation",
+      "required_source_types": ["fact", "scope"]
+    },
+    "benefit_performance": {
+      "argument_outline": ["医疗服务效益", "临床与质量效益", "运营管理效益", "数据与安全效益", "社会效益", "指标定义与取证", "基线目标和评价机制"],
+      "assembly_mode": "traceability_argument",
+      "required_source_types": ["fact", "scope", "corpus"]
+    },
+    "risk": {
+      "argument_outline": ["政策与合规风险", "范围与需求风险", "数据迁移风险", "接口与技术风险", "网络数据安全风险", "进度质量与运维风险"],
+      "assembly_mode": "risk_control_argument",
+      "required_source_types": ["fact", "scope", "policy"]
+    },
+    "conclusion": {
+      "argument_outline": ["研究判断", "推进条件", "待确认前置事项", "后续工作建议"],
+      "assembly_mode": "evidence_summary",
+      "required_source_types": ["fact", "scope"]
+    }
+  },
+  "chapters": {
+    "1.1.1": {"argument_outline": ["项目定位与编制边界", "验收与决策边界"]},
+    "1.1.2": {
+      "argument_outline": ["建设目标摘要", "建设规模与内容", "建设期", "验收与决策边界"],
+      "assembly_mode": "derived_objective_scope_summary",
+      "canonical_chapter_code": "4.1.2",
+      "canonical_semantic_sections": ["overall_objective_scope"],
+      "regression_group": "hospital_objective"
+    },
+    "1.2.1": {"argument_outline": ["政策筛选与采用原则", "政策法规依据清单", "适用条款与建设承接", "效力复核与动态更新"]},
+    "1.2.2": {"argument_outline": ["标准筛选与采用原则", "标准规范依据清单", "适用条款与建设承接", "执行取证与版本更新"]},
+    "2.1.1": {"argument_outline": ["资料边界与核实口径", "业务运行现状", "待核实事项"], "semantic_sections": ["project_background"], "content_slots": ["baseline", "current_state"]},
+    "2.1.2": {"argument_outline": ["资料边界与核实口径", "应用系统现状", "数据接口与基础环境", "待核实事项"], "semantic_sections": ["project_background"], "content_slots": ["current_state", "assessment_target_baseline"]},
+    "2.2.1": {"argument_outline": ["证据支持的问题表现", "成因与影响链", "范围承载与优先关系"], "semantic_sections": ["project_background"], "content_slots": ["problem"]},
+    "2.2.2": {"argument_outline": ["建设需求响应", "范围承载与优先关系", "验收与决策边界"], "semantic_sections": ["requirements_analysis"]},
+    "3.1.1": {"argument_outline": ["政策必要性", "业务必要性", "实施条件与约束"], "semantic_sections": ["necessity_feasibility"], "content_slot_prefixes": ["necessity_"]},
+    "3.2.1": {"argument_outline": ["技术可行性", "数据与安全可行性", "实施条件与约束"], "semantic_sections": ["necessity_feasibility"], "content_slot_prefixes": ["feasibility_"]},
+    "4.1.1": {"argument_outline": ["建设原则", "业务与应用架构", "数据与集成架构", "技术与安全架构"], "semantic_sections": ["construction_principles"]},
+    "4.1.2": {
+      "argument_outline": ["总体目标", "指标定义与取证", "基线目标和评价机制", "验收闭环"],
+      "assembly_mode": "semantic_corpus_objective",
+      "semantic_sections": ["overall_objective_scope"],
+      "content_slots": ["overall_objective_scope", "overall_objective", "technical_objective"],
+      "regression_group": "hospital_objective"
+    },
+    "4.2.1": {"argument_outline": ["业务与应用架构", "数据与集成架构", "技术与安全架构", "验收闭环"], "semantic_sections": ["technical_route", "system_relationships"]},
+    "4.2.2": {"argument_outline": ["数据与集成架构", "技术与安全架构", "网络数据安全风险", "验收闭环"], "semantic_sections": ["information_resource_planning", "standards_norms", "technical_route"]},
+    "5.1.1": {
+      "section_role": "construction_content",
+      "argument_outline": ["客户清单范围", "确认能力边界", "标准方案全量组装", "项目化参数调整", "接口安全与验收取证"],
+      "assembly_mode": "full_confirmed_standard_solution",
+      "completion_checks": [
+        "每个确认范围项均有四级正文承载",
+        "每个确认能力映射的受审标准方案块按原顺序全量进入工作稿",
+        "标准方案只做项目名称、建设方式、范围边界和禁用词清理，不做摘要压缩"
+      ],
+      "validation": {
+        "require_standard_block_markers": true,
+        "require_standard_block_text": true
+      },
+      "regression_group": "construction_content"
+    },
+    "6.1.1": {"argument_outline": ["项目治理与组织分工", "阶段计划与成果物", "进度与里程碑控制", "质量安全和变更控制"], "semantic_sections": ["implementation_operation"], "content_slots": ["implementation_plan", "organization", "quality"]},
+    "6.1.2": {"argument_outline": ["数据迁移", "测试与上线切换", "业务连续性与回退", "配置和开发管理"], "semantic_sections": ["implementation_operation"], "content_slots": ["implementation_plan", "quality", "risk"]},
+    "6.2.1": {"argument_outline": ["培训与知识转移", "运维服务与SLA", "运行监测与持续改进", "运维交接与服务评价"], "semantic_sections": ["implementation_operation"], "content_slots": ["staffing", "organization", "quality"]},
+    "7.1.1": {"argument_outline": ["估算范围与口径", "计价依据与复核", "全生命周期成本"]},
+    "7.1.2": {"argument_outline": ["范围和费用映射", "软件与服务费用", "基础资源与其他费用", "概算变更控制"]},
+    "7.2.1": {"argument_outline": ["资金来源和年度安排", "支付条件与资金控制", "运行维护经费"]},
+    "8.1.1": {"argument_outline": ["医疗服务效益", "临床与质量效益", "运营管理效益", "数据与安全效益", "社会效益"], "semantic_sections": ["construction_benefit"], "content_slots": ["economic_benefit", "social_benefit", "construction_benefit"]},
+    "8.2.1": {"argument_outline": ["指标体系设计", "指标定义与取证", "基线目标和评价机制", "验收闭环"], "semantic_sections": ["construction_benefit"], "content_slots": ["performance_indicator"]},
+    "9.1.1": {"argument_outline": ["政策与合规风险", "范围与需求风险", "数据迁移风险", "接口与技术风险", "网络数据安全风险", "进度质量与运维风险"]},
+    "10.1.1": {"argument_outline": ["研究判断", "推进条件", "待确认前置事项", "后续工作建议"]}
+  },
+  "regression_groups": {
+    "hospital_objective": {
+      "chapters": ["1.1.2", "4.1.2"],
+      "chapter_tests": {
+        "1.1.2": ["tests.test_hospital_narrative_corpus_chain"],
+        "4.1.2": ["tests.test_hospital_narrative_corpus_chain"]
+      },
+      "family_tests": [
+        "tests.test_hospital_narrative_corpus_chain",
+        "tests.test_reference_corpus_workflow",
+        "tests.test_section_task_packages",
+        "tests.test_evidence_bound_draft_quality"
+      ]
+    },
+    "construction_content": {
+      "chapters": ["5.1.1", "5.1.2", "5.2.1", "5.2.2"],
+      "chapter_tests": {
+        "5.1.1": [
+          "tests.test_chapter_incremental_workflow",
+          "tests.test_outline_and_full_standard_assembly.FullStandardSolutionAssemblyTests"
+        ]
+      },
+      "family_tests": [
+        "tests.test_chapter_incremental_workflow",
+        "tests.test_outline_and_full_standard_assembly",
+        "tests.test_section_task_packages",
+        "tests.test_evidence_bound_draft_quality"
+      ]
+    }
+  }
+}

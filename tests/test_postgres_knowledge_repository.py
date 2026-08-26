@@ -23,6 +23,7 @@ from postgres_knowledge_db import (  # noqa: E402
     validate_schema,
 )
 from sync_postgres_knowledge_snapshot import (  # noqa: E402
+    build_pack_snapshot,
     catalog_payload_from_rows,
     record_snapshot,
 )
@@ -51,6 +52,81 @@ def make_policy_catalog(path: Path) -> None:
 
 
 class PostgresKnowledgeRepositoryTests(unittest.TestCase):
+    def test_legacy_standard_solution_snapshot_without_coverage_proof_is_blocked(self) -> None:
+        class Cursor:
+            def __init__(self, connection):
+                self.connection = connection
+                self.description = []
+                self.rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, sql, _params=None):
+                for token, columns, rows in self.connection.responses:
+                    if token in sql:
+                        self.description = [
+                            type("Column", (), {"name": column})() for column in columns
+                        ]
+                        self.rows = rows
+                        return
+                raise AssertionError(sql)
+
+            def fetchall(self):
+                return self.rows
+
+        class Connection:
+            def __init__(self, responses):
+                self.responses = responses
+
+            def cursor(self):
+                return Cursor(self)
+
+        block_columns = [
+            "block_id", "source_location", "heading_path", "section_role", "module_code",
+            "clean_text", "reuse_class", "quality_level", "prerequisites", "variable_slots",
+            "forbidden_terms", "length_band", "text_hash", "content_type", "semantic_section",
+            "content_slot", "source_order", "block_index", "adaptation_mode", "assessment_targets",
+            "construction_scope_tags", "content_format", "content_payload", "asset_manifest",
+            "visible_text_hash",
+        ]
+        connection = Connection([
+            ("runtime_package_source", ["source_role", "file_name", "source_sha256"], [("standard_solution", "standard.docx", "a" * 64)]),
+            ("runtime_corpus_document", ["corpus_document_id", "document_type", "project_type", "quality_level", "permission_scope", "version", "source_corpus_type"], [("DOC-1", "feasibility_study", "hospital_informationization", "B", "internal_company_reuse", "1", "legacy_unspecified")]),
+            ("runtime_corpus_block", block_columns, [("BLOCK-1", "paragraph:7", ["系统", "模块"], "construction", "", "正文", "B", "B", [], [], [], {}, "b" * 64, "legacy_unspecified", "", "", 0, 7, "structure_only", [], [], "plain_text", {}, [], "b" * 64)]),
+            ("runtime_product_capability", ["capability_id", "product_code", "product_name", "capability_name", "capability_description", "category", "module_name", "selection_rules", "prerequisites", "interface_dependencies", "exclusions", "applicable_versions", "source_location"], [("CAP-1", "P1", "系统", "模块", "", "", "模块", [], [], [], [], [], "row:1")]),
+            (
+                "runtime_capability_block",
+                [
+                    "capability_id", "block_id", "relation_type", "priority",
+                    "review_status", "root_heading_path", "relation_order",
+                    "verbatim_eligible",
+                ],
+                [
+                    (
+                        "CAP-1", "BLOCK-1", "standard_description", 1,
+                        "approved", ["系统", "模块"], 1, True,
+                    )
+                ],
+            ),
+        ])
+        with self.assertRaisesRegex(ValueError, "完整导入门禁"):
+            build_pack_snapshot(
+                connection,
+                "medical_report_kb",
+                {
+                    "package_id": "PACK-1",
+                    "schema_version": "1.0",
+                    "title": "标准包",
+                    "permission_scope": "internal_company_reuse",
+                    "review_summary": {},
+                    "content_hash": "c" * 64,
+                },
+            )
+
     def test_policy_catalog_build_is_stable_and_uses_current_visible_sheet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workbook_path = Path(tmp) / "policy-index.xlsx"
@@ -120,6 +196,25 @@ class PostgresKnowledgeRepositoryTests(unittest.TestCase):
             migration_dir() / "006_runtime_policy_catalog.sql"
         ).read_text(encoding="utf-8")
         self.assertIn("CREATE OR REPLACE VIEW medical_report_kb.runtime_policy_catalog", catalog_view_sql)
+
+    def test_capability_match_scope_migration_appends_view_column(self) -> None:
+        migration_sql = (
+            migration_dir() / "007_capability_block_match_scope.sql"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("capability.*", migration_sql)
+        self.assertIn(
+            "package.content_hash AS package_content_hash,\n  capability.block_match_scope",
+            migration_sql,
+        )
+
+    def test_construction_subtree_migration_preserves_capability_view_columns(self) -> None:
+        migration_sql = (
+            migration_dir() / "009_construction_solution_subtree.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "relation.priority,\n  relation.review_status,\n  relation.root_heading_path",
+            migration_sql,
+        )
 
     def test_policy_catalog_snapshot_payload_preserves_candidate_boundaries(self) -> None:
         payload = catalog_payload_from_rows(

@@ -4,6 +4,8 @@
 
 历史方案不得以整篇文档直接进入生成。先登记来源和权限，再按能够独立承担一个论证功能的最小语料块清洗、切分和审核。
 
+公司标准方案和参考可研必须按 `references/reference-corpus-cleaning-rules.md` 使用 `source_corpus_type + content_type` 双轴分型。`document_type` 只表示目标文种，不足以区分建设方案正文、可研专用论证和跨文种通用描述。
+
 ## 2. 复用等级
 
 - A：纯通用、已审核、无项目变量，可记录来源后直接复用。
@@ -19,9 +21,13 @@
 
 公司产品能力与公共通用语料逻辑隔离。只有与 `project_scope_item` 确认映射且属于本期客户范围的能力才能进入正文。
 
+非建设章节只从 `reference_feasibility/generic_reference` 中召回 `feasibility_narrative/common_narrative`；`structure_only` 只提供结构。建设内容只从能力精确绑定的 `standard_solution/construction_solution` 召回，不允许两条链交叉灌入。
+
+非建设章节必须先由章节生成契约给出 `semantic_sections/content_slots`，再匹配项目类型和测评目标；禁止仅按 `section_role` 或文本相似度全章取块。带电子病历、互联互通等级的语料只有与项目输入目标一致时才能召回；项目未给目标时不得继承参考等级。
+
 公司标准方案和标准清单先由 `build_standard_knowledge_pack.py` 在仓库外构建受审知识包，再导入项目数据库。知识包不得进入公开仓库；政策类历史段落默认 `D/prohibited`。能力映射初始状态只能为 `candidate`：在客户建设清单已明确的前提下，可按 `standard_block_ids` 限量召回受审语料，仅生成标记为 `working_only/structure_only` 的可评审初稿，不得宣称映射已确认。
 
-人工将范围—能力映射确认为 `confirmed` 后，只有 `block_match_scope` 为能力或模块级精确匹配的能力，才能按 `standard_block_ids` 保存的原始顺序全量装配全部已审核标准块。全量装配只做禁用词和项目语态归一，不得再评分、取前若干块、压缩为摘要或截断字数。只匹配到产品总标题的 `product_heading_fallback` 仍为 `structure_only`，必须先复核块边界，不能把整套产品方案误装到单个能力。无论何种状态，均禁止脱离客户清单按章节角色全库灌入；任务包只能绑定动态目录实际选中的块 ID，并校验已确认能力的可用块数与装配块数相等。
+建设清单与标准清单对照、模块标题子树解析和标准建设方案逐字装配不在本通用语料模块处理，统一执行 `references/construction-alignment-rules.md`。尤其不得把 `standard_block_ids` 直接当成装配边界，也不得对已确认标准方案执行禁用词替换、项目语态归一或其他改写。只匹配到产品总标题的内容仍为 `structure_only`，不能装入单个模块。
 
 ## 4. 章节组合计划
 
@@ -37,6 +43,8 @@
 - 完成条件和校验规则。
 
 正文不得直接拼接检索结果。生成必须以组合计划为输入，并记录实际使用来源。
+
+对已批准 A/B 级叙事块，正文生成器按 `source_order` 保留全量文本，B级只替换声明变量并检查禁用词；变量无法解析、出现原项目残留或工作层提示语时跳过该块并保留审计标记。C级只向任务包提供结构，不复制原文。
 
 ## 5. 校验
 

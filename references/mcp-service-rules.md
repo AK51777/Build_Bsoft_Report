@@ -32,13 +32,15 @@
 
 ### 3.2 `construction_prepare_review`
 
-输入项目根、本地 SQLite、用户 XLSX、项目代码和可选知识包 ID。服务依次执行：
+输入项目根、本地 SQLite、用户 XLSX、项目代码和必填的已同步知识包 ID。缺少 `package_id` 时禁止退化为全库匹配。服务依次执行：
 
 1. 机械提取 XLSX，并保留来源路径、哈希、工作表、原行和合并单元格语义；
 2. 将清单标准化写入已初始化项目 SQLite；
 3. 冻结可见清单快照；
 4. 按模块最小颗粒度生成精确、相似、歧义和缺失结果；
 5. 输出 JSON、人工核对 Markdown、路径和哈希。
+
+在步骤 4 前，服务必须验证知识快照携带的标准方案完整性证明。旧快照缺证明、短正文/空标题未全量保留、结构哈希或内容哈希不一致时，工具必须返回错误并要求重建标准知识包；不得继续生成候选。
 
 `review_metadata`响应模式可以向调用方返回人工对话必需的项目模块名、候选模块名、匹配分数、候选 ID 和方案根路径，但不得返回标准方案正文或块 ID。`paths_only`模式只返回摘要和本地制品路径。
 
@@ -54,12 +56,13 @@
 - 已确认标准库确无内容的模块只保留标题和`【待补充】`；
 - 仍有未确认项时，仅在显式`allow_unresolved_preview=true`下生成阻断型工作预览；
 - 装配后校验清单快照哈希、知识包哈希、块哈希、标题根、顺序和缺失标记。
+- 返回并锁定 `manifest_id`、`manifest_hash`、`package_id` 和 `package_content_hash`；校验必须重新计算这些绑定，不能复用旧校验结论。
 
 只有返回`status=validated`且`validation.valid=true`，才可进入正常 Word 构建。`blocked_working_preview`只能供人工检查。
 
 ### 3.4 `word_generate`
 
-输入装配 Markdown、输出 DOCX、项目名和已确认的格式权威配置。格式权威配置必须绑定：
+输入装配 Markdown、输出 DOCX、项目数据库与代码、装配清单、装配校验报告、项目名和已确认的格式权威配置。服务必须现场复算装配校验，要求清单、校验文件和当前数据库的 `manifest_id/manifest_hash/package_content_hash/validation_hash` 全部一致，并要求输入 Markdown 与该装配清单确定性重建结果逐字相等。缺少任一证据或自行拼写的 Markdown 必须阻断。格式权威配置必须绑定：
 
 - 权威模板路径及 SHA-256；
 - 确认人和确认时间；
@@ -118,7 +121,7 @@ AI 应用中的 MCP 启动项使用 Python 解释器绝对路径、脚本绝对�
 
 将`assets/mcp/trae-mcp.example.json`复制为本机配置并替换三个绝对路径：Python解释器、MCP脚本和本机服务配置。然后在TRAE的“设置 → MCP → 手动添加 → 原始配置（JSON）”中粘贴`mcpServers`对象，或写入TRAE当前项目启用的`mcp.json`。使用时选择`Builder with MCP`，或把`medical-report-local`加入一个只负责建设清单和Word的自定义智能体。
 
-弱模型必须依靠工具状态驱动，不得一次索取标准方案正文：先调用`service_status`，再调用`construction_prepare_review`；只把`review_items`组织成一轮人工确认；确认后调用`construction_apply_and_assemble`；最后把返回的本地Markdown路径交给`word_generate`。任何`isError=true`、`blocked_working_preview`、`structure_blocked`或`delivery_ready=false`都必须原样报告，不得凭语言推断为已完成。
+弱模型必须依靠工具状态驱动，不得一次索取标准方案正文：先调用`service_status`，再用已同步的明确 `package_id` 调用`construction_prepare_review`；只把`review_items`组织成一轮人工确认；确认后调用`construction_apply_and_assemble`；最后把返回的 `combined_markdown`、`manifest`、`validation` 三个本地制品路径连同同一项目数据库和项目代码交给`word_generate`。任何`isError=true`、`blocked_working_preview`、`structure_blocked`或`delivery_ready=false`都必须原样报告，不得凭语言推断为已完成。
 
 ## 5. 失败与审计
 
