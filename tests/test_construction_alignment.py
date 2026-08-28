@@ -126,6 +126,48 @@ class ConstructionAlignmentTests(unittest.TestCase):
                 "paragraph:120",
                 120,
             ),
+            (
+                "BLOCK-INTEGRATION-CLINICAL",
+                ["建设内容", "医院信息平台", "医院信息集成平台", "临床业务服务集成"],
+                "临床业务服务集成标准方案原文。",
+                "paragraph:130",
+                130,
+            ),
+            (
+                "BLOCK-INTEGRATION-MEDICAL",
+                ["建设内容", "医院信息平台", "医院信息集成平台", "医疗管理服务集成"],
+                "医疗管理服务集成标准方案原文。",
+                "paragraph:131",
+                131,
+            ),
+            (
+                "BLOCK-INTEGRATION-OPERATION",
+                ["建设内容", "医院信息平台", "医院信息集成平台", "运营管理服务集成"],
+                "运营管理服务集成标准方案原文。",
+                "paragraph:132",
+                132,
+            ),
+            (
+                "BLOCK-INTEGRATION-PATIENT",
+                ["建设内容", "医院信息平台", "医院信息集成平台", "患者公众服务集成"],
+                "患者公众服务集成标准方案原文。",
+                "paragraph:133",
+                133,
+            ),
+            (
+                "BLOCK-CDR",
+                ["建设内容", "医院信息平台", "医院数据中心", "临床数据中心(CDR)"],
+                "临床数据中心标准方案原文。",
+                "paragraph:140",
+                140,
+            ),
+            (
+                "BLOCK-DATA-QUALITY",
+                ["建设内容", "医院信息平台", "数据治理平台", "数据质量管理"],
+                "数据质量管理标准方案原文。",
+                "paragraph:141",
+                141,
+            ),
         ]
         with connect(self.database) as conn:
             apply_migrations(conn)
@@ -192,6 +234,42 @@ class ConstructionAlignmentTests(unittest.TestCase):
                     "医院信息基础平台",
                     "统一消息平台",
                     ["BLOCK-MESSAGE-ALIAS"],
+                ),
+                (
+                    "CAP-INTEGRATION-CLINICAL",
+                    "医院信息集成平台软件",
+                    "临床服务系统整合",
+                    ["BLOCK-INTEGRATION-CLINICAL"],
+                ),
+                (
+                    "CAP-INTEGRATION-MEDICAL",
+                    "医院信息集成平台软件",
+                    "医疗管理系统整合",
+                    ["BLOCK-INTEGRATION-MEDICAL"],
+                ),
+                (
+                    "CAP-INTEGRATION-OPERATION",
+                    "医院信息集成平台软件",
+                    "运营管理系统整合",
+                    ["BLOCK-INTEGRATION-OPERATION"],
+                ),
+                (
+                    "CAP-INTEGRATION-PATIENT",
+                    "医院信息集成平台软件",
+                    "患者服务系统整合",
+                    ["BLOCK-INTEGRATION-PATIENT"],
+                ),
+                (
+                    "CAP-CDR",
+                    "医院数据中心",
+                    "临床数据中心(CDR)",
+                    ["BLOCK-CDR"],
+                ),
+                (
+                    "CAP-DATA-QUALITY",
+                    "数据治理平台",
+                    "数据质量管理",
+                    ["BLOCK-DATA-QUALITY"],
                 ),
             ]
             for capability_id, product_name, module_name, block_ids in capabilities:
@@ -319,6 +397,91 @@ class ConstructionAlignmentTests(unittest.TestCase):
             candidates[0]["capability"]["capability_id"],
             "CAP-EXACT-ROOT-MISSING",
         )
+
+    def test_database_capability_aliases_recall_unique_solution_roots_for_review(self) -> None:
+        payload = copy.deepcopy(self.scope_payload)
+        payload["source"]["sha256"] = "scope-integration-aliases"
+        payload["sheets"][0]["merged_ranges"] = []
+        aliases = [
+            ("临床服务系统整合", "临床业务服务集成"),
+            ("医疗管理系统整合", "医疗管理服务集成"),
+            ("运营管理系统整合", "运营管理服务集成"),
+            ("患者服务系统整合", "患者公众服务集成"),
+        ]
+        payload["sheets"][0]["rows"] = [
+            {
+                "_source_row": index + 2,
+                "序号": str(index + 1),
+                "软件大类": "院内集成平台及数据中心",
+                "软件系统名称": "医院信息集成平台软件",
+                "模块名称": scope_name,
+            }
+            for index, (scope_name, _) in enumerate(aliases)
+        ]
+        ingest_scope_payload(self.database, payload, project_code="ALIGN-001")
+        capture_scope_snapshot(self.database, "ALIGN-001", payload)
+
+        matched = match_scope(self.database, "ALIGN-001")
+
+        self.assertEqual(matched["summary"]["content_missing"], 0)
+        self.assertEqual(matched["summary"]["needs_human_review"], 4)
+        for item, (_, expected_root) in zip(matched["items"], aliases):
+            candidate = item["candidates"][0]
+            self.assertEqual(candidate["root_heading_path"][-1], expected_root)
+            self.assertEqual(candidate["root_match_type"], "module_only")
+            self.assertEqual(candidate["candidate_status"], "needs_review")
+            self.assertFalse(item["auto_selected_candidate_id"])
+
+    def test_assembly_restores_customer_categories_and_database_parent_headings(self) -> None:
+        payload = copy.deepcopy(self.scope_payload)
+        payload["source"]["sha256"] = "scope-heading-ancestors"
+        payload["sheets"][0]["merged_ranges"] = []
+        payload["sheets"][0]["rows"] = [
+            {
+                "_source_row": 2,
+                "序号": "1",
+                "软件大类": "院内集成平台及数据中心",
+                "软件系统名称": "医院数据中心",
+                "模块名称": "临床数据中心(CDR)",
+            },
+            {
+                "_source_row": 3,
+                "序号": "2",
+                "软件大类": "院内集成平台及数据中心",
+                "软件系统名称": "数据治理平台",
+                "模块名称": "数据质量管理",
+            },
+            {
+                "_source_row": 4,
+                "序号": "3",
+                "软件大类": "HIS系统",
+                "软件系统名称": "医院信息基础平台",
+                "模块名称": "主数据管理",
+            },
+            {
+                "_source_row": 5,
+                "序号": "4",
+                "软件大类": "医技业务",
+                "软件系统名称": "医院信息基础平台",
+                "模块名称": "主数据管理",
+            },
+        ]
+        ingest_scope_payload(self.database, payload, project_code="ALIGN-001")
+        capture_scope_snapshot(self.database, "ALIGN-001", payload)
+        matched = match_scope(self.database, "ALIGN-001")
+        self.assertEqual(matched["summary"]["auto_confirmed_exact"], 4)
+
+        manifest, markdown = assemble(self.database, "ALIGN-001", matched["match_run_id"])
+
+        self.assertEqual(markdown.count("### 院内集成平台及数据中心\n"), 1)
+        self.assertEqual(markdown.count("### HIS系统\n"), 1)
+        self.assertEqual(markdown.count("### 医技业务\n"), 1)
+        self.assertIn("#### 医院数据中心\n", markdown)
+        self.assertIn("##### 临床数据中心(CDR)\n", markdown)
+        self.assertIn("#### 数据治理平台\n", markdown)
+        self.assertIn("##### 数据质量管理\n", markdown)
+        self.assertEqual(markdown.count("#### 医院信息基础平台\n"), 2)
+        self.assertTrue(validate_manifest(self.database, manifest)["valid"])
 
     def test_human_can_bind_exact_capability_to_reviewed_alias_root(self) -> None:
         payload = copy.deepcopy(self.scope_payload)

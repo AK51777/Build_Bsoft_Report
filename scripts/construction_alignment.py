@@ -28,9 +28,10 @@ from knowledge_db import (
 from standard_solution_coverage import require_complete_standard_solution_coverage
 
 
-MATCHER_VERSION = "construction-module-subtree-v2"
+MATCHER_VERSION = "construction-module-subtree-v3"
 MAX_REVIEW_CANDIDATES = 5
 WEAK_SIMILARITY_THRESHOLD = 0.65
+SEMANTIC_ROOT_SIMILARITY_THRESHOLD = 0.8
 PENDING_MARKER = "【待补充】"
 PENDING_CONFIRMATION_MARKER = "【待确认】"
 
@@ -69,6 +70,25 @@ def _score(left: Any, right: Any) -> float:
     if min(len(a), len(b)) >= 3 and (a in b or b in a):
         ratio = max(ratio, min(len(a), len(b)) / max(len(a), len(b)))
     return round(ratio, 6)
+
+
+def _review_normalize_name(value: Any) -> str:
+    """Normalize generic wording variants for candidate recall, never auto-confirmation."""
+    text = _normalize_name(value).replace("整合", "集成").replace("系统", "")
+    if text.endswith("软件"):
+        text = text[:-2]
+    return text
+
+
+def _review_score(left: Any, right: Any) -> float:
+    raw_score = _score(left, right)
+    a = _review_normalize_name(left)
+    b = _review_normalize_name(right)
+    if not a or not b:
+        return raw_score
+    if a == b:
+        return 1.0
+    return max(raw_score, round(SequenceMatcher(None, a, b).ratio(), 6))
 
 
 def _canonical_hash(value: Any) -> str:
@@ -318,6 +338,72 @@ def _is_prefix(prefix: list[str], path: list[str]) -> bool:
     )
 
 
+def _same_review_heading(left: Any, right: Any) -> bool:
+    a = _review_normalize_name(left)
+    b = _review_normalize_name(right)
+    return bool(a and b and a == b)
+
+
+def _customer_heading_paths(scope_row: dict[str, Any]) -> tuple[list[str], list[str]]:
+    hierarchy = [
+        str(item).strip()
+        for item in _json(scope_row.get("hierarchy_json"), [])
+        if str(item).strip()
+    ]
+    customer_parent_path = hierarchy[:-1]
+    customer_group_path = [
+        item.strip()
+        for item in str(scope_row.get("domain") or "").split(" / ")
+        if item.strip()
+    ]
+    for parent in reversed(customer_parent_path):
+        if customer_group_path and _same_review_heading(customer_group_path[-1], parent):
+            customer_group_path.pop()
+        else:
+            break
+    return customer_group_path, customer_parent_path
+
+
+def _standard_ancestor_path(root: list[str], product_name: Any) -> list[str]:
+    if len(root) < 2:
+        return []
+    candidates = [
+        (index, _review_score(product_name, heading))
+        for index, heading in enumerate(root[:-1])
+    ]
+    product_index, product_score = max(candidates, key=lambda item: (item[1], item[0]))
+    if product_score < SEMANTIC_ROOT_SIMILARITY_THRESHOLD:
+        product_index = len(root) - 2
+    return [str(item) for item in root[product_index:-1] if str(item).strip()]
+
+
+def _dedupe_heading_path(values: Iterable[Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        heading = str(value or "").strip()
+        if not heading or any(_same_review_heading(heading, existing) for existing in result):
+            continue
+        result.append(heading)
+    return result
+
+
+def _assembly_heading_fields(
+    scope_row: dict[str, Any], root: list[str], product_name: Any
+) -> dict[str, Any]:
+    customer_group_path, customer_parent_path = _customer_heading_paths(scope_row)
+    standard_ancestor_path = _standard_ancestor_path(root, product_name)
+    return {
+        "customer_domain": str(scope_row.get("domain") or ""),
+        "customer_hierarchy": _json(scope_row.get("hierarchy_json"), []),
+        "customer_group_path": customer_group_path,
+        "customer_parent_path": customer_parent_path,
+        "standard_ancestor_path": standard_ancestor_path,
+        "display_parent_path": _dedupe_heading_path(
+            customer_group_path + customer_parent_path + standard_ancestor_path
+        ),
+    }
+
+
 def _root_options(
     capability: dict[str, Any], blocks: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -361,7 +447,51 @@ def _root_options(
         option["block_ids"] = [block["block_id"] for block in subtree]
         result.append(option)
     preferred = [item for item in result if item["root_match_type"] == "module_and_product"]
-    return preferred or result
+    if preferred:
+        return preferred
+
+    semantic_options: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+    module_labels = [
+        capability.get("module_name"),
+        capability.get("capability_name"),
+    ]
+    for block in blocks:
+        path = [str(item) for item in block.get("heading_path", []) if str(item).strip()]
+        module_positions = [
+            index
+            for index, item in enumerate(path)
+            if max(_review_score(label, item) for label in module_labels)
+            >= SEMANTIC_ROOT_SIMILARITY_THRESHOLD
+        ]
+        for module_index in module_positions:
+            product_positions = [
+                index
+                for index, item in enumerate(path[:module_index])
+                if _review_score(capability.get("product_name"), item)
+                >= SEMANTIC_ROOT_SIMILARITY_THRESHOLD
+            ]
+            if not product_positions:
+                continue
+            root = path[: module_index + 1]
+            key = (block["corpus_document_id"], tuple(root))
+            semantic_options[key] = {
+                "corpus_document_id": block["corpus_document_id"],
+                "root_heading_path": root,
+                "root_match_type": "module_only",
+            }
+    semantic_result: list[dict[str, Any]] = []
+    for option in semantic_options.values():
+        subtree = [
+            block
+            for block in blocks
+            if block["corpus_document_id"] == option["corpus_document_id"]
+            and _is_prefix(option["root_heading_path"], block.get("heading_path", []))
+        ]
+        subtree.sort(key=_block_order)
+        option["blocks"] = subtree
+        option["block_ids"] = [block["block_id"] for block in subtree]
+        semantic_result.append(option)
+    return semantic_result or result
 
 
 def _requested_root_options(
@@ -504,16 +634,29 @@ def match_scope(
             scored: list[dict[str, Any]] = []
             for capability in capability_rows:
                 module_name = capability.get("module_name") or capability["capability_name"]
-                name_score = max(
+                exact_name_score = max(
                     _score(scope_row["original_name"], module_name),
                     _score(scope_row["standard_name"], module_name),
                     _score(scope_row["original_name"], capability["capability_name"]),
                 )
-                module_name_exact = name_score == 1.0
+                name_score = max(
+                    exact_name_score,
+                    _review_score(scope_row["original_name"], module_name),
+                    _review_score(scope_row["standard_name"], module_name),
+                    _review_score(scope_row["original_name"], capability["capability_name"]),
+                )
+                module_name_exact = exact_name_score == 1.0
                 if not module_name_exact and name_score < similar_threshold:
                     continue
-                parent_score = max(
+                exact_parent_score = max(
                     [_score(term, capability["product_name"]) for term in parent_terms] or [0.0]
+                )
+                parent_score = max(
+                    exact_parent_score,
+                    max(
+                        [_review_score(term, capability["product_name"]) for term in parent_terms]
+                        or [0.0]
+                    ),
                 )
                 root_options = _root_options(capability, blocks)
                 preferred_roots = [
@@ -544,7 +687,7 @@ def match_scope(
                     block_ids = []
                     status = "blocked"
                     reason = "standard capability exists but its solution subtree is missing"
-                hierarchy_exact = parent_score == 1.0
+                hierarchy_exact = exact_parent_score == 1.0
                 scored.append(
                     {
                         "capability": capability,
@@ -906,7 +1049,7 @@ def _solution_item_markdown(item: dict[str, Any], heading_level: int = 3) -> lis
         ):
             common = len(relative) - 1
         for index in range(common, len(relative)):
-            level = min(6, heading_level + 1 + index)
+            level = min(7, heading_level + 1 + index)
             lines.extend([f"{'#' * level} {relative[index]}", ""])
         lines.extend([fragment["clean_text"], ""])
         last_relative = relative
@@ -921,8 +1064,21 @@ def render_scope_fragment(manifest: dict[str, Any]) -> str:
 
 def render_solution_fragment(manifest: dict[str, Any]) -> str:
     lines = ["## 应用软件建设方案", ""]
+    last_parent_path: list[str] = []
     for item in manifest["application_software_solution"]["items"]:
-        lines.extend(_solution_item_markdown(item))
+        parent_path = [str(value) for value in item.get("display_parent_path", [])]
+        common = 0
+        while (
+            common < min(len(last_parent_path), len(parent_path))
+            and _same_review_heading(last_parent_path[common], parent_path[common])
+        ):
+            common += 1
+        for index in range(common, len(parent_path)):
+            level = min(7, 3 + index)
+            lines.extend([f"{'#' * level} {parent_path[index]}", ""])
+        module_level = min(7, 3 + len(parent_path))
+        lines.extend(_solution_item_markdown(item, heading_level=module_level))
+        last_parent_path = parent_path
     return "\n".join(lines)
 
 
@@ -957,7 +1113,7 @@ def assemble(
             dict(row)
             for row in conn.execute(
                 """
-                SELECT csr.*,psi.original_name,psi.standard_name
+                SELECT csr.*,psi.original_name,psi.standard_name,psi.domain
                 FROM construction_scope_row AS csr
                 JOIN project_scope_item AS psi ON psi.scope_id=csr.scope_id
                 WHERE csr.scope_snapshot_id=? ORDER BY csr.source_ordinal
@@ -968,6 +1124,7 @@ def assemble(
         items: list[dict[str, Any]] = []
         unresolved: list[dict[str, Any]] = []
         for scope_row in scope_rows:
+            base_heading_fields = _assembly_heading_fields(scope_row, [], "")
             decision = conn.execute(
                 """
                 SELECT * FROM construction_match_decision
@@ -997,6 +1154,7 @@ def assemble(
                             "block_ids": [],
                             "fragments": [],
                             "content_hash": sha256_text(PENDING_CONFIRMATION_MARKER),
+                            **base_heading_fields,
                         }
                     )
                 continue
@@ -1014,6 +1172,7 @@ def assemble(
                     "block_ids": [],
                     "fragments": [],
                     "content_hash": sha256_text(PENDING_MARKER),
+                    **base_heading_fields,
                 }
                 items.append(item)
                 continue
@@ -1078,6 +1237,9 @@ def assemble(
             content_hash = _canonical_hash(
                 [{"block_id": block["block_id"], "text_hash": block["text_hash"]} for block in selected_blocks]
             )
+            heading_fields = _assembly_heading_fields(
+                scope_row, root, capability["product_name"]
+            )
             items.append(
                 {
                     "scope_row_id": scope_row["scope_row_id"],
@@ -1092,6 +1254,7 @@ def assemble(
                     "block_ids": chosen_ids,
                     "fragments": fragments,
                     "content_hash": content_hash,
+                    **heading_fields,
                 }
             )
         if unresolved and not allow_unresolved_preview:
@@ -1272,7 +1435,8 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
         for item in items:
             scope_row = conn.execute(
                 """
-                SELECT csr.source_ordinal,csr.scope_row_id,psi.scope_id,psi.original_name
+                SELECT csr.source_ordinal,csr.scope_row_id,csr.hierarchy_json,
+                       psi.scope_id,psi.original_name,psi.domain
                 FROM construction_scope_row AS csr
                 JOIN project_scope_item AS psi ON psi.scope_id=csr.scope_id
                 WHERE csr.scope_snapshot_id=? AND csr.scope_row_id=?
@@ -1292,6 +1456,22 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
                         "item": item.get("original_name"),
                     }
                 )
+            if scope_row is not None:
+                expected_headings = _assembly_heading_fields(
+                    dict(scope_row),
+                    [str(value) for value in item.get("root_heading_path", [])],
+                    item.get("product_name", ""),
+                )
+                if any(
+                    item.get(key) != value for key, value in expected_headings.items()
+                ):
+                    issues.append(
+                        {
+                            "code": "assembly_heading_hierarchy_mismatch",
+                            "blocking": True,
+                            "item": item.get("original_name"),
+                        }
+                    )
             if item.get("status") == "pending_supplement":
                 if item.get("fragments") or item.get("block_ids"):
                     issues.append({"code": "gap_contains_standard_content", "blocking": True, "item": item.get("original_name")})
@@ -1394,6 +1574,7 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
             "manifest hash and persisted manifest binding",
             "match run and complete standard package snapshot binding",
             "customer source order",
+            "customer category and database heading ancestor hierarchy",
             "explicit pending supplement gaps",
             "complete subtree, block order and verbatim text/hash equality",
         ],
