@@ -1,11 +1,10 @@
 {
   "name": "medical-report-knowledge",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260830162539",
   "description": "为医疗可研Skill提供一次激活、持续可用的远程只读知识访问。",
   "author": {
     "name": "Build Bsoft Report Team"
   },
-  "skills": "./skills/",
   "interface": {
     "displayName": "医疗可研只读知识",
     "shortDescription": "一次激活后持续调用团队只读知识服务。",

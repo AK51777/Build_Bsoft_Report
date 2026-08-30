@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "remote_url": "https://knowledge.example.com/mcp",
+  "remote_url": "https://ppt.akmaster.cloud/mcp",
   "request_timeout": 60,
   "max_query_limit": 100
 }

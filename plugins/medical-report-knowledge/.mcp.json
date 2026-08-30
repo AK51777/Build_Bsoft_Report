@@ -3,7 +3,7 @@
     "medical-report-knowledge": {
       "command": "python3",
       "args": [
-        "../../scripts/remote_knowledge_mcp_bridge.py",
+        "./scripts/remote_knowledge_mcp_bridge.py",
         "--config",
         "./config/remote-knowledge-bridge.json"
       ],

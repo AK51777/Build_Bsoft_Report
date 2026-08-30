@@ -50,6 +50,19 @@ $build-medical-it-feasibility-report
 请从零处理 <项目目录>，先盘点材料并建立事实、政策和范围基线，不要直接补写未知事实。
 ```
 
+#### 启用团队只读知识 MCP
+
+报告 Skill 与只读知识插件位于同一仓库，但需要各安装一次。完成上面的 Skill 安装后，在新设备的 Codex 终端执行：
+
+```bash
+codex plugin marketplace add AK51777/Build_Bsoft_Report --ref main
+codex plugin add medical-report-knowledge@build-bsoft-report
+```
+
+重启 Codex 并新建任务。第一次调用 Skill 时，如果`knowledge_access_status`返回`activation_required`，按提示输入管理员发放的一次性激活码；Skill 会调用`activate_knowledge_access`，并把长期令牌保存在当前系统用户的私有凭据文件中。以后关闭、重新打开 Codex 或新建任务都不需要重复激活。更换电脑或系统用户、删除凭据文件、令牌到期或被管理员吊销后，才需要新码。
+
+插件已经预置生产服务地址`https://ppt.akmaster.cloud/mcp`。激活码和令牌不得写入项目目录、报告、Git 或共享配置。
+
 仓库根目录就是 Skill 根目录，`SKILL.md` 不应再多嵌套一层。项目材料和运行产物应存放在 Skill 仓库之外；`.gitignore` 会额外阻止常见数据库、凭据、客户材料和项目输出被误提交。
 
 ### 2.2 在其他 AI 工具中调用

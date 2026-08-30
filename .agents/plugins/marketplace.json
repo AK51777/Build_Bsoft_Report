@@ -1,0 +1,20 @@
+{
+  "name": "build-bsoft-report",
+  "interface": {
+    "displayName": "Build Bsoft Report"
+  },
+  "plugins": [
+    {
+      "name": "medical-report-knowledge",
+      "source": {
+        "source": "local",
+        "path": "./plugins/medical-report-knowledge"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
