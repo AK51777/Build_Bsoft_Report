@@ -28,6 +28,7 @@
 | 数据契约 | `assets/knowledge-base/`、迁移脚本 | schema、迁移、权限和哈希不一致 | 数据库单元测试 + 相关黄金案例 |
 | 建设清单对照与方案装配 | `scripts/construction_alignment.py`、`references/construction-alignment-rules.md` | 原清单失真、同名标题串入、相似项未确认、标准正文被改写 | 模块级合成案例 + 真实快照只读核验 |
 | 本机MCP适配 | `scripts/medical_report_mcp_server.py`、`references/mcp-service-rules.md`、`assets/mcp/` | 协议不兼容、路径越界、正文外发、调用顺序错误、工作稿被误报为交付稿 | MCP协议/UTF-8/路径隔离单测 + 清单和Word真实项目外部回归 |
+| 团队只读知识MCP | `scripts/remote_*mcp*.py`、`scripts/sync_remote_knowledge_snapshot.py`、`references/remote-readonly-knowledge-mcp-rules.md`、`plugins/medical-report-knowledge/` | 越权写入、秘密入配置、激活码复用、分页缺失、未落本地快照即写作 | HTTP认证/只读工具/凭据持久化/分页适配单测 + 真实发布视图只读验收 |
 | 确定性脚本 | `scripts/` | 参数、ID、计算、状态和输出错误 | 目标脚本测试 |
 | 项目模板 | `assets/project-workbench-template/`等 | 初始化缺文件、模板残留 | 初始化测试 + 简单项目案例 |
 | 章节链 | 章节规则、组合计划、生成、校验脚本 | 跨章漂移、范围漏载、语料缺块 | chapter → family；必要时full |

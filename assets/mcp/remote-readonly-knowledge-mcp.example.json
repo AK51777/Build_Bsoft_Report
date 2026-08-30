@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8785,
+    "mcp_path": "/mcp",
+    "max_query_limit": 100,
+    "max_request_bytes": 1048576
+  },
+  "auth": {
+    "credential_store": "/var/lib/medical-report-knowledge/credentials.json",
+    "hash_secret_env": "MEDICAL_REPORT_MCP_HASH_SECRET",
+    "access_token_days": 90
+  },
+  "database": {
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "medical_report_knowledge",
+    "user": "medical_report_runtime_reader",
+    "password_env": "MEDICAL_REPORT_RUNTIME_DB_PASSWORD",
+    "schema": "medical_report_kb",
+    "connect_timeout": 10,
+    "statement_timeout_ms": 15000
+  }
+}

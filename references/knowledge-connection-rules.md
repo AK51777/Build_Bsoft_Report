@@ -133,4 +133,6 @@ python scripts/run_project_pipeline.py "D:\path\new-project" --project-code PROJ
 
 本版提供的`medical_report_mcp_server.py`只是在同一台电脑上通过`stdio`暴露清单对照、人工决定装配和Word生成。它不监听网络，且仍要求标准知识已经按本规则同步到项目SQLite；不得把它解释为服务器数据库代理，也不得在MCP配置中放入数据库密码或SSH密钥。具体接口边界见`mcp-service-rules.md`。
 
-其他成员在不知道数据库密码的情况下直接访问服务器知识，仍需要单独的服务端代理能力，包括身份认证、项目授权、租户隔离、审计、限流、只读查询边界和密钥托管；不能靠复制本地profile或把stdio服务改成公网监听解决。远程团队版MCP/API、云托管、自动隧道和完整多租户RLS仍属于后续版本。
+团队成员在不知道数据库密码的情况下访问服务器知识时，使用独立的`remote_readonly_knowledge_mcp.py`和本机`remote_knowledge_mcp_bridge.py`。服务只查询已发布`runtime_*`视图，不接收项目文件；一次性激活后，长期令牌仅保存在当前系统用户目录。完整报告仍必须运行`sync_remote_knowledge_snapshot.py`把明确选择的package/catalog写入项目SQLite并通过快照门禁。部署、发码、失效和最小权限规则见`remote-readonly-knowledge-mcp-rules.md`。
+
+当前团队版默认所有已激活用户共享同一只读知识范围，不实现角色、部门、租户或硬件绑定。公网TLS反向代理、运行进程托管和数据库只读账号由部署环境负责；知识迁移、更新和发布仍只允许管理员走既有后台链路。

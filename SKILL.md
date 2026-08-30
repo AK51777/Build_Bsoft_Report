@@ -13,8 +13,8 @@ description: Create evidence-based Chinese government-investment medical informa
 
 ## 开始前
 
-1. 读取 `references/knowledge-connection-rules.md`，解析 `knowledge.mode` 和用户级 profile；不得要求每个新项目重复填写数据库主机、端口、库名和用户。
-2. `server_required` 必须先运行知识诊断并从发布运行视图同步；`snapshot_required` 必须验证本地快照；`offline_pack` 必须导入受审离线包；`disabled` 必须明确记录未使用共享知识。任一知识门禁失败时在 S0 阻断。
+1. 读取 `references/knowledge-connection-rules.md`。若环境提供`knowledge_access_status`，先检查远程只读知识访问：未激活时只向用户索取一次性激活码并调用`activate_knowledge_access`，不得回显或记录激活码；已激活时调用`knowledge_service_status`。否则解析`knowledge.mode`和用户级profile；不得要求每个新项目重复填写数据库主机、端口、库名和用户。
+2. `server_required`必须先运行知识诊断并从发布运行视图同步。远程只读路径先用`knowledge_query`明确选择package/catalog ID，再运行`sync_remote_knowledge_snapshot.py`写入项目SQLite并验证快照；不得在正文阶段直接以远程查询结果替代项目快照。`snapshot_required`必须验证本地快照；`offline_pack`必须导入受审离线包；`disabled`必须明确记录未使用共享知识。任一知识门禁失败时在S0阻断。
 3. 同步或验证后报告 profile、连接状态、使用来源、package/catalog IDs、内容哈希、同步时间、权限范围及语料、能力、目录数量。数据量为零时禁止声称已经使用共享知识。
 4. 正文阶段只从已验证的项目级 `数据包/数据库/knowledge.sqlite` 读取知识。`server_required` 连接失败不得降级；只有 `snapshot_required` 或明确允许旧快照的运行才可复用完整、未损坏且权限匹配的快照。
 5. 读取用户指定的全部材料和已有中间产物，不依赖当前对话记忆；识别当前阶段并复用已经确认的产物。
@@ -34,6 +34,7 @@ description: Create evidence-based Chinese government-investment medical informa
 - 识别地方编制标准、提取Word格式画像或处理缩进时，读取 `references/document-profile-rules.md`。
 - 建库、迁移或解释数据对象时，读取 `references/knowledge-base-schema.md`。
 - 解析 profile、诊断服务器、选择知识包、同步或验证快照时，读取 `references/knowledge-connection-rules.md`。
+- 通过团队远程只读MCP激活、检索或同步知识时，同时读取`references/remote-readonly-knowledge-mcp-rules.md`；不得向用户索取数据库密码，也不得把远程服务用于传输客户项目材料。
 - 处理客户清单、公司能力清单或投资对应关系时，读取 `references/scope-mapping-rules.md`。
 - 从公司标准 Word 构建、发布或同步标准知识包时，读取 `references/reference-corpus-cleaning-rules.md` 的标准方案专用规则；标准方案执行完整导入，不得套用参考语料的最短字数过滤或去重规则。
 - 对照客户与公司模块清单、发起相似/缺失核对或完整装配标准建设方案时，读取 `references/construction-alignment-rules.md`；该链路不得交给通用语料改写器处理。
@@ -132,6 +133,7 @@ python scripts/construction_alignment.py apply-decisions <knowledge.sqlite> <con
 python scripts/construction_alignment.py assemble <knowledge.sqlite> <project-code> <match-run-id> --output-json construction-assembly-manifest.json --output-scope-md software-construction-list.md --output-solution-md application-software-solution.md --output-md construction-assembly.md
 python scripts/construction_alignment.py validate <knowledge.sqlite> <construction-assembly-manifest.json> --output construction-assembly-validation.json
 python scripts/medical_report_mcp_server.py --config <local-medical-report-mcp.json> --check-config  # 去掉--check-config后作为stdio MCP启动；规则见references/mcp-service-rules.md
+python scripts/sync_remote_knowledge_snapshot.py <knowledge.sqlite> <project-code> --config <remote-knowledge-bridge.json> --package-id <package-id> [--catalog-id <catalog-id>] --output remote-snapshot-sync.json
 python scripts/build_scope_baseline.py <knowledge.sqlite> <project-code> --output scope-baseline.json
 python scripts/apply_scope_item_decisions.py <knowledge.sqlite> <scope-decisions.json> --output scope-decision-apply.json
 python scripts/confirm_scope_baseline.py <knowledge.sqlite> <project-code> <baseline-id> --confirmed-by <name> --confirmed-at <time> --output scope-baseline-confirmation.json

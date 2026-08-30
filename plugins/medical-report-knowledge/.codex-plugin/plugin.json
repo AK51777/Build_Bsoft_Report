@@ -1,0 +1,25 @@
+{
+  "name": "medical-report-knowledge",
+  "version": "0.1.0",
+  "description": "为医疗可研Skill提供一次激活、持续可用的远程只读知识访问。",
+  "author": {
+    "name": "Build Bsoft Report Team"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "医疗可研只读知识",
+    "shortDescription": "一次激活后持续调用团队只读知识服务。",
+    "longDescription": "连接管理员预先配置的远程知识服务。首次使用输入一次性激活码，后续由本机凭据桥自动复用只读访问凭据。",
+    "developerName": "Build Bsoft Report Team",
+    "category": "Productivity",
+    "capabilities": [
+      "Read-only knowledge",
+      "One-time activation"
+    ],
+    "defaultPrompt": [
+      "检查团队知识服务是否已激活。",
+      "查询已发布的医疗可研标准知识。"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

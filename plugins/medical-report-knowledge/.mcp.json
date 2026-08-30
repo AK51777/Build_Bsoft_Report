@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "medical-report-knowledge": {
+      "command": "python3",
+      "args": [
+        "../../scripts/remote_knowledge_mcp_bridge.py",
+        "--config",
+        "./config/remote-knowledge-bridge.json"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "HOME",
+        "USERPROFILE"
+      ],
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 120
+    }
+  }
+}
