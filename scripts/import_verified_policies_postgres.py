@@ -39,6 +39,14 @@ def validate_policies(payload: dict[str, Any], publish: bool) -> None:
                 raise ValueError(f"policy clause text is missing: {policy['title']}")
             if publish and clause.get("verification_status", policy.get("verification_status")) != "verified":
                 raise ValueError(f"published policy clause is not verified: {policy['title']}")
+            if publish and not str(clause.get("normalized_summary", "")).strip():
+                raise ValueError(
+                    f"published policy clause normalized_summary is missing: {policy['title']}"
+                )
+            if publish and not clause.get("permitted_sections"):
+                raise ValueError(
+                    f"published policy clause permitted_sections is missing: {policy['title']}"
+                )
 
 
 def import_policies(connection, payload: dict[str, Any], *, publish: bool, schema: str) -> dict[str, Any]:

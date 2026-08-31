@@ -17,7 +17,7 @@ from knowledge_db import (
 )
 
 
-OUTLINE_TEMPLATE_VERSION = "2026-08-17.2"
+OUTLINE_TEMPLATE_VERSION = "2026-08-28.1"
 
 
 CHAPTER_TITLES = {
@@ -136,51 +136,6 @@ def _source_snapshot(
     }
 
 
-def _is_standard_policy(policy_type: str, title: str) -> bool:
-    return policy_type.casefold() in {
-        "evaluation_rule",
-        "standard",
-        "technical_standard",
-        "specification",
-    } or any(term in title for term in ("标准", "规范", "评价", "测评", "指南"))
-
-
-def _policy_outline_items(conn, plan: dict[str, Any]) -> list[dict[str, Any]]:
-    if plan["chapter_code"] not in {"1.2.1", "1.2.2"}:
-        return []
-    standard_mode = plan["chapter_code"] == "1.2.2"
-    rows = conn.execute(
-        """
-        SELECT s.source_object_id,m.policy_id,m.basis_order,d.title,d.policy_type
-        FROM section_plan_source s
-        JOIN project_policy_match m ON m.match_id=s.source_object_id
-        JOIN policy_document d ON d.policy_id=m.policy_id
-        JOIN policy_clause c ON c.clause_id=m.clause_id
-        WHERE s.plan_id=? AND s.source_type='policy' AND s.usage_mode='evidence'
-          AND m.background_use=1 AND d.validity_status='current'
-          AND d.verification_status='verified' AND c.verification_status='verified'
-        ORDER BY COALESCE(m.basis_order,999999),d.title,m.policy_id,m.match_id
-        """,
-        (plan["plan_id"],),
-    ).fetchall()
-    result = []
-    seen: set[str] = set()
-    for row in rows:
-        if row["policy_id"] in seen:
-            continue
-        if _is_standard_policy(row["policy_type"] or "", row["title"] or "") != standard_mode:
-            continue
-        seen.add(row["policy_id"])
-        result.append(
-            {
-                "title": f"《{row['title']}》的适用关系",
-                "policy_id": row["policy_id"],
-                "match_id": row["source_object_id"],
-            }
-        )
-    return result
-
-
 def _fixed_subsections(conn, plans: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = {}
     for plan in plans:
@@ -208,25 +163,6 @@ def _fixed_subsections(conn, plans: list[dict[str, Any]]) -> dict[str, list[dict
             }
             for index, aspect in enumerate(aspects, start=1)
         ]
-        if plan["chapter_code"] in {"1.2.1", "1.2.2"}:
-            policy_parent_code = f"{plan['chapter_code']}.3"
-            for index, item in enumerate(_policy_outline_items(conn, plan), start=1):
-                nodes.append(
-                    {
-                        "node_code": f"{policy_parent_code}.{index}",
-                        "heading_level": 5,
-                        "title": item["title"],
-                        "node_kind": "subfeature",
-                        "source_type": "plan",
-                        "source_object_id": plan["plan_id"],
-                        "parent_code": policy_parent_code,
-                        "metadata": {
-                            "content_mode": "verified_policy_heading",
-                            "policy_id": item["policy_id"],
-                            "match_id": item["match_id"],
-                        },
-                    }
-                )
         result[plan["plan_id"]] = nodes
     return result
 

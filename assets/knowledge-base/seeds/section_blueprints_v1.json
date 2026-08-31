@@ -17,16 +17,29 @@
     },
     {
       "section_role": "basis",
-      "purpose": "列明经过核验和确认的编制依据与标准。",
-      "required_questions": ["适用的现行政策是什么", "适用的标准规范是什么"],
-      "required_fact_categories": [],
+      "purpose": "按政策类、行业标准、安全类标准和投资估算四组列明编制依据。",
+      "required_questions": ["适用的现行政策是什么", "适用的行业与安全标准是什么", "投资估算采用什么依据"],
+      "required_fact_categories": ["project", "organization", "investment"],
       "required_scope_types": [],
       "required_policy_topics": ["basis"],
       "required_tables": ["编制依据表"],
       "length_min": 1800,
       "length_max": 4000,
       "forbidden_content": ["未核验文号", "历史政策作为现行依据"],
-      "completion_rules": ["每项依据有官方来源和条款", "依据与背景使用同一政策ID"]
+      "completion_rules": ["四类依据分别满足数量门禁", "每项正式政策有官方来源和条款", "政策类依据与政策背景使用同一政策ID及顺序"]
+    },
+    {
+      "section_role": "policy_background",
+      "purpose": "按国家、省或自治区、市或项目建设地区说明与项目直接相关的政策背景。",
+      "required_questions": ["国家政策如何形成建设背景", "省或自治区有哪些适用政策", "项目所在市或地区有哪些直接政策"],
+      "required_fact_categories": ["project", "organization"],
+      "required_scope_types": [],
+      "required_policy_topics": ["background"],
+      "required_tables": [],
+      "length_min": 1200,
+      "length_max": 6000,
+      "forbidden_content": ["依据目录标题扩写政策要求", "地方政策跨地区套用", "政策目标写成项目既成事实"],
+      "completion_rules": ["国家省市三级分别核验数量", "每段绑定已核验条款", "背景政策ID是政策类依据的同序子序列"]
     },
     {
       "section_role": "current_state",
@@ -162,9 +175,9 @@
   "outline": [
     {"chapter_code": "1.1.1", "section_title": "项目基本情况", "section_role": "project_overview"},
     {"chapter_code": "1.1.2", "section_title": "建设范围与目标", "section_role": "project_overview"},
-    {"chapter_code": "1.2.1", "section_title": "政策法规依据", "section_role": "basis"},
-    {"chapter_code": "1.2.2", "section_title": "标准规范依据", "section_role": "basis"},
-    {"chapter_code": "2.1.1", "section_title": "建设单位与业务概况", "section_role": "current_state"},
+    {"chapter_code": "1.2.1", "section_title": "可行性研究报告编制依据", "section_role": "basis"},
+    {"chapter_code": "1.2.2", "section_title": "编制依据适用与动态更新", "section_role": "basis"},
+    {"chapter_code": "2.1.1", "section_title": "政策背景", "section_role": "policy_background"},
     {"chapter_code": "2.1.2", "section_title": "信息化建设现状", "section_role": "current_state"},
     {"chapter_code": "2.2.1", "section_title": "现状问题分析", "section_role": "problem_need"},
     {"chapter_code": "2.2.2", "section_title": "建设需求分析", "section_role": "problem_need"},

@@ -21,6 +21,7 @@ from docx.oxml.ns import qn
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.shared import Cm, Pt, RGBColor
 
+from build_policy_section_material import build_material as build_policy_material
 from knowledge_db import apply_migrations, connect, sha256_file, sha256_text
 
 
@@ -542,6 +543,33 @@ def current_adopted_hash(conn, project_id: str) -> str:
     return sha256_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
+def verify_policy_validation_freshness(
+    summary: dict[str, Any],
+    current_material: dict[str, Any] | None,
+    *,
+    has_policy_chapters: bool,
+) -> None:
+    if not has_policy_chapters:
+        return
+    if current_material is None:
+        raise RuntimeError("formal delivery blocked: current policy material is unavailable")
+    delivery_blockers = list(
+        current_material.get("quality", {}).get("delivery_blockers", [])
+    )
+    if current_material.get("delivery_eligible") is not True or delivery_blockers:
+        detail = "、".join(delivery_blockers[:10]) or "delivery_eligible=false"
+        raise RuntimeError(
+            "formal delivery blocked: current policy material is not delivery eligible: "
+            + detail
+        )
+    if (
+        summary.get("policy_match_run_id") != current_material.get("match_run_id")
+        or summary.get("policy_material_signature")
+        != current_material.get("material_signature")
+    ):
+        raise RuntimeError("formal delivery blocked: policy validation is stale")
+
+
 def authorize_delivery(
     markdown: str,
     template: Path | None,
@@ -593,11 +621,43 @@ def authorize_delivery(
             raise RuntimeError("formal delivery blocked: delivery validation is stale")
         if summary.get("outline_hash") != assembled["outline_hash"]:
             raise RuntimeError("formal delivery blocked: confirmed outline validation is stale")
+        active_policy_chapter_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(DISTINCT chapter_code) FROM section_composition_plan
+                WHERE project_id=? AND chapter_code IN ('1.2.1','2.1.1')
+                  AND applicability_status<>'not_applicable'
+                """,
+                (project["project_id"],),
+            ).fetchone()[0]
+        )
+        if project["document_type"] == "feasibility_study" and active_policy_chapter_count != 2:
+            raise RuntimeError(
+                "formal delivery blocked: feasibility study requires both 1.2.1 and 2.1.1 policy chapters"
+            )
+        has_policy_chapters = active_policy_chapter_count > 0
+        current_policy_material = None
+        if has_policy_chapters:
+            try:
+                current_policy_material = build_policy_material(
+                    database, project_code, mode="delivery"
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"formal delivery blocked: current policy material is unavailable: {exc}"
+                ) from exc
+        verify_policy_validation_freshness(
+            summary,
+            current_policy_material,
+            has_policy_chapters=has_policy_chapters,
+        )
     return {
         "validation_run_id": validation["validation_run_id"],
         "validated_content_sha256": content_sha256,
         "outline_version_id": assembled["outline_version_id"],
         "outline_hash": assembled["outline_hash"],
+        "policy_match_run_id": summary.get("policy_match_run_id", ""),
+        "policy_material_signature": summary.get("policy_material_signature", ""),
     }
 
 

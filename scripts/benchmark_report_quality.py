@@ -15,6 +15,19 @@ from xml.etree import ElementTree as ET
 from audit_delivery_artifact import NS, W_NS, document_metrics
 from knowledge_db import apply_migrations, connect, sha256_file
 
+BASIS_GROUP_MINIMUMS = {
+    "policy_basis": 16,
+    "industry_standard": 20,
+    "security_standard": 16,
+    "investment_basis": 5,
+}
+BASIS_GROUP_LABELS = {
+    "policy_basis": "政策类依据",
+    "industry_standard": "行业标准依据",
+    "security_standard": "安全类标准依据",
+    "investment_basis": "投资估算编制依据",
+}
+
 
 def template_skeleton(text: str) -> str:
     value = re.sub(r"\s+", "", text)
@@ -33,13 +46,14 @@ def template_skeleton(text: str) -> str:
 
 def basis_group(heading_stack: dict[int, str]) -> str:
     headings = list(heading_stack.values())
+    if any("投资估算" in value and "依据" in value for value in headings):
+        return "investment_basis"
+    if any("安全" in value and "依据" in value for value in headings):
+        return "security_standard"
+    if any("行业标准" in value and "依据" in value for value in headings):
+        return "industry_standard"
     if any("政策" in value and "依据" in value for value in headings):
-        return "policy"
-    if any(
-        any(term in value for term in ("标准", "规范")) and "依据" in value
-        for value in headings
-    ):
-        return "standard"
+        return "policy_basis"
     return ""
 
 
@@ -59,8 +73,9 @@ def docx_content_profile(path: Path) -> dict[str, Any]:
     placeholders = Counter()
     template_residue = Counter()
     policy_titles: set[str] = set()
-    policy_basis_titles: set[str] = set()
-    standard_basis_titles: set[str] = set()
+    basis_titles: dict[str, set[str]] = {
+        group: set() for group in BASIS_GROUP_MINIMUMS
+    }
     heading_stack: dict[int, str] = {}
     for paragraph in document_root.findall(".//w:p", NS):
         text = "".join(node.text or "" for node in paragraph.findall(".//w:t", NS)).strip()
@@ -78,10 +93,8 @@ def docx_content_profile(path: Path) -> dict[str, Any]:
                 current_chapter = text
             titles = set(re.findall(r"《([^》]{4,80})》", text))
             current_basis_group = basis_group(heading_stack)
-            if current_basis_group == "policy":
-                policy_basis_titles.update(titles)
-            if current_basis_group == "standard":
-                standard_basis_titles.update(titles)
+            if current_basis_group:
+                basis_titles[current_basis_group].update(titles)
             continue
         compact = re.sub(r"\s+", "", text)
         for marker in (
@@ -104,10 +117,8 @@ def docx_content_profile(path: Path) -> dict[str, Any]:
         titles = set(re.findall(r"《([^》]{4,80})》", text))
         policy_titles.update(titles)
         current_basis_group = basis_group(heading_stack)
-        if current_basis_group == "policy":
-            policy_basis_titles.update(titles)
-        if current_basis_group == "standard":
-            standard_basis_titles.update(titles)
+        if current_basis_group:
+            basis_titles[current_basis_group].update(titles)
 
     normalized = [
         re.sub(r"[，。；：、“”‘’（）()\d\s]+", "", paragraph).casefold()
@@ -153,10 +164,20 @@ def docx_content_profile(path: Path) -> dict[str, Any]:
         "template_residue": dict(template_residue),
         "policy_title_mentions": len(policy_titles),
         "policy_titles": sorted(policy_titles),
-        "policy_basis_title_mentions": len(policy_basis_titles),
-        "policy_basis_titles": sorted(policy_basis_titles),
-        "standard_basis_title_mentions": len(standard_basis_titles),
-        "standard_basis_titles": sorted(standard_basis_titles),
+        "basis_group_title_mentions": {
+            group: len(titles) for group, titles in basis_titles.items()
+        },
+        "basis_group_titles": {
+            group: sorted(titles) for group, titles in basis_titles.items()
+        },
+        "policy_basis_title_mentions": len(basis_titles["policy_basis"]),
+        "policy_basis_titles": sorted(basis_titles["policy_basis"]),
+        "standard_basis_title_mentions": len(
+            basis_titles["industry_standard"] | basis_titles["security_standard"]
+        ),
+        "standard_basis_titles": sorted(
+            basis_titles["industry_standard"] | basis_titles["security_standard"]
+        ),
     }
 
 
@@ -164,7 +185,7 @@ def project_expectations(database: Path, project_code: str) -> dict[str, Any]:
     with connect(database.resolve()) as conn:
         apply_migrations(conn)
         project = conn.execute(
-            "SELECT project_id FROM project WHERE project_code=?", (project_code,)
+            "SELECT project_id,document_type FROM project WHERE project_code=?", (project_code,)
         ).fetchone()
         if project is None:
             raise RuntimeError(f"project_code {project_code} is not initialized")
@@ -206,6 +227,7 @@ def project_expectations(database: Path, project_code: str) -> dict[str, Any]:
         "required_chars": int(required_chars or 0),
         "outline_nodes": outline_nodes,
         "confirmed_policy_titles": confirmed_policies,
+        "requires_policy_basis": project["document_type"] == "feasibility_study",
     }
 
 
@@ -225,7 +247,12 @@ def evaluate(
     expectations = (
         project_expectations(database, project_code)
         if database is not None and project_code
-        else {"required_chars": 0, "outline_nodes": [], "confirmed_policy_titles": []}
+        else {
+            "required_chars": 0,
+            "outline_nodes": [],
+            "confirmed_policy_titles": [],
+            "requires_policy_basis": False,
+        }
     )
     blockers: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
@@ -349,26 +376,24 @@ def evaluate(
                 "policy_basis_thin",
                 f"正文仅识别到 {candidate_profile['policy_title_mentions']} 项政策/标准名称，建议至少 {required_policy_mentions} 项。",
             )
-    if reference_profile:
-        reference_basis_count = (
-            reference_profile["policy_basis_title_mentions"]
-            + reference_profile["standard_basis_title_mentions"]
-        )
-        required_basis_count = min(20, max(10, reference_basis_count // 4))
-        candidate_basis_count = (
-            candidate_profile["policy_basis_title_mentions"]
-            + candidate_profile["standard_basis_title_mentions"]
-        )
-        if candidate_basis_count < required_basis_count:
-            add(
-                blockers,
-                "basis_catalog_thin",
-                f"编制依据章节仅列示 {candidate_basis_count} 项政策/标准，低于真人基准下限 {required_basis_count} 项。",
-            )
-        if candidate_profile["policy_basis_title_mentions"] < 4:
-            add(blockers, "policy_basis_group_thin", "政策法规依据少于 4 项。")
-        if candidate_profile["standard_basis_title_mentions"] < 4:
-            add(blockers, "standard_basis_group_thin", "标准规范与评价依据少于 4 项。")
+    candidate_basis_counts = candidate_profile["basis_group_title_mentions"]
+    reference_basis_counts = (
+        reference_profile["basis_group_title_mentions"] if reference_profile else {}
+    )
+    enforce_basis_minimums = bool(
+        expectations.get("requires_policy_basis")
+        or any(candidate_basis_counts.values())
+        or any(reference_basis_counts.values())
+    )
+    if enforce_basis_minimums:
+        for group, minimum in BASIS_GROUP_MINIMUMS.items():
+            actual = int(candidate_basis_counts.get(group, 0))
+            if actual < minimum:
+                add(
+                    blockers,
+                    f"{group}_hard_minimum",
+                    f"{BASIS_GROUP_LABELS[group]}仅识别到{actual}项，低于硬下限{minimum}项。",
+                )
 
     if reference_metrics:
         required_tables = min(12, max(6, reference_metrics["tables"] // 3))
@@ -406,6 +431,7 @@ def evaluate(
             "planned_body_chars": expectations["required_chars"],
             "outline_node_count": len(expected_outline),
             "confirmed_policy_count": len(confirmed_policy_titles),
+            "basis_group_minimums": BASIS_GROUP_MINIMUMS,
         },
         "blocker_count": len(blockers),
         "warning_count": len(warnings),

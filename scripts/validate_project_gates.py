@@ -7,10 +7,169 @@ import argparse
 import json
 from pathlib import Path
 
+from build_policy_section_material import build_material
 from knowledge_db import apply_migrations, connect, dump_json, now_iso, stable_id
 
 
+BASIS_GATE_LABELS = {
+    "policy_basis": "政策类依据",
+    "industry_standard": "行业标准依据",
+    "security_standard": "安全类标准依据",
+    "investment_basis": "投资估算编制依据",
+}
+BACKGROUND_GATE_LABELS = {
+    "national": "国家政策背景",
+    "province": "省/自治区政策背景",
+    "prefecture": "市/项目建设地区政策背景",
+}
+BASIS_HARD_MINIMUMS = {
+    "policy_basis": 16,
+    "industry_standard": 20,
+    "security_standard": 16,
+    "investment_basis": 5,
+}
+BACKGROUND_HARD_MINIMUMS = {"national": 8, "province": 2, "prefecture": 1}
+
+
+def policy_material_quality_checks(
+    material: dict | None,
+    *,
+    material_error: str = "",
+) -> list[dict]:
+    if material is None:
+        reason = material_error or "政策章节材料不可用"
+        return [
+            {
+                "stage_code": "S1P_POLICY",
+                "gate_code": "GATE-BASIS-QUANTITY",
+                "result": "fail",
+                "blocking_count": 1,
+                "message": f"无法核验四类编制依据数量：{reason}。",
+            },
+            {
+                "stage_code": "S1P_POLICY",
+                "gate_code": "GATE-POLICY-BACKGROUND-CHAIN",
+                "result": "fail",
+                "blocking_count": 1,
+                "message": f"无法核验政策背景来源、属地层级与顺序：{reason}。",
+            },
+            {
+                "stage_code": "S1P_POLICY",
+                "gate_code": "GATE-POLICY-MATERIAL-ELIGIBILITY",
+                "result": "fail",
+                "blocking_count": 1,
+                "message": f"无法核验政策材料完整性与交付资格：{reason}。",
+            },
+        ]
+
+    quality = material.get("quality", {})
+    basis_quality = quality.get("formal_basis", {})
+    basis_groups = material.get("basis_groups", {})
+    basis_actual_counts = {
+        section: len(basis_groups.get(section, [])) for section in BASIS_GATE_LABELS
+    }
+    basis_minimums = {
+        section: max(
+            BASIS_HARD_MINIMUMS[section],
+            int(basis_quality.get(section, {}).get("minimum", 0)),
+        )
+        for section in BASIS_GATE_LABELS
+    }
+    basis_gaps = {
+        section: max(0, basis_minimums[section] - basis_actual_counts[section])
+        for section in BASIS_GATE_LABELS
+    }
+    basis_overages = {
+        section: int(basis_quality.get(section, {}).get("overage", 0))
+        for section in BASIS_GATE_LABELS
+    }
+    total_basis_gap = sum(basis_gaps.values())
+    total_basis_overage = sum(basis_overages.values())
+    basis_counts = "、".join(
+        f"{label}{basis_actual_counts[section]}/{basis_minimums[section]}"
+        for section, label in BASIS_GATE_LABELS.items()
+    )
+    basis_result = "fail" if total_basis_gap else ("warning" if total_basis_overage else "pass")
+
+    background_quality = quality.get("formal_background", {})
+    background_groups = material.get("policy_background_groups", {})
+    background_gaps = {
+        level: max(
+            0,
+            max(
+                BACKGROUND_HARD_MINIMUMS.get(level, 0),
+                int(item.get("minimum", 0)),
+            )
+            - len(background_groups.get(level, [])),
+        )
+        for level, item in background_quality.items()
+    }
+    background_gap = sum(background_gaps.values())
+    order_ok = bool(material.get("policy_background_is_ordered_subsequence"))
+    working_order_ok = bool(material.get("working_policy_background_is_ordered_subsequence"))
+    orphan_count = len(material.get("policy_background_orphan_ids", []))
+    missing_context = list(material.get("project_context", {}).get("missing_required_context", []))
+    background_blocking = background_gap + orphan_count + len(missing_context)
+    if not order_ok:
+        background_blocking += 1
+    if not working_order_ok:
+        background_blocking += 1
+    background_counts = "、".join(
+        f"{BACKGROUND_GATE_LABELS.get(level, level)}{len(background_groups.get(level, []))}/"
+        f"{max(BACKGROUND_HARD_MINIMUMS.get(level, 0), int(item.get('minimum', 0)))}"
+        for level, item in background_quality.items()
+    ) or "无可核验层级"
+
+    delivery_blockers = list(quality.get("delivery_blockers", []))
+    delivery_eligible = material.get("delivery_eligible") is True
+    material_blocking = len(delivery_blockers) or (0 if delivery_eligible else 1)
+
+    return [
+        {
+            "stage_code": "S1P_POLICY",
+            "gate_code": "GATE-BASIS-QUANTITY",
+            "result": basis_result,
+            "blocking_count": total_basis_gap,
+            "message": (
+                "四类正式编制依据必须达到项目画像规定的硬下限；超过建议上限时转人工复核。"
+                f" 当前：{basis_counts}。"
+            ),
+        },
+        {
+            "stage_code": "S1P_POLICY",
+            "gate_code": "GATE-POLICY-BACKGROUND-CHAIN",
+            "result": "fail" if background_blocking else "pass",
+            "blocking_count": background_blocking,
+            "message": (
+                "政策背景只能使用政策类依据，须按同一顺序形成国家—省/自治区—市/地区层级，"
+                "且项目属地与组织事实必须齐备。"
+                f" 当前：{background_counts}；正式同序={order_ok}；工作态同序={working_order_ok}。"
+            ),
+        },
+        {
+            "stage_code": "S1P_POLICY",
+            "gate_code": "GATE-POLICY-MATERIAL-ELIGIBILITY",
+            "result": "fail" if material_blocking else "pass",
+            "blocking_count": material_blocking,
+            "message": (
+                "政策材料必须通过唯一文件去重、条款章节许可、背景摘要、禁用主张、当前属地/范围适用性及交付资格检查。"
+                + (
+                    " 当前阻断：" + "、".join(delivery_blockers[:10]) + "。"
+                    if delivery_blockers
+                    else f" 当前交付资格={delivery_eligible}。"
+                )
+            ),
+        },
+    ]
+
+
 def validate(database: Path, project_code: str) -> dict:
+    policy_material = None
+    policy_material_error = ""
+    try:
+        policy_material = build_material(database, project_code, mode="working")
+    except ValueError as exc:
+        policy_material_error = str(exc)
     with connect(database) as conn:
         apply_migrations(conn)
         project = conn.execute("SELECT * FROM project WHERE project_code=?", (project_code,)).fetchone()
@@ -179,6 +338,12 @@ def validate(database: Path, project_code: str) -> dict:
                 "blocking_count": citation_gap or (0 if latest_policy_run_id else 1),
                 "message": "编制依据与政策背景必须共用最新匹配运行、相同政策ID和条款引用矩阵。",
             }
+        )
+        checks.extend(
+            policy_material_quality_checks(
+                policy_material,
+                material_error=policy_material_error,
+            )
         )
         latest_standard_run = conn.execute(
             """

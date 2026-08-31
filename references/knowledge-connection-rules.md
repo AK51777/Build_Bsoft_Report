@@ -58,7 +58,7 @@ python scripts/knowledge_doctor.py --project-root "D:\path\new-project" --profil
 ```powershell
 python scripts/provision_postgres_runtime_reader.py `
   --host 127.0.0.1 --port 15432 `
-  --database <数据库名> --user <管理员账号> `
+  --database hrr_feedback --user <管理员账号> `
   --schema medical_report_kb --output reader-plan.json
 ```
 
@@ -70,9 +70,9 @@ $env:MEDICAL_FEASIBILITY_DB_PASSWORD = "<新只读账号密码>"
 
 python scripts/provision_postgres_runtime_reader.py `
   --host 127.0.0.1 --port 15432 `
-  --database <数据库名> --user <管理员账号> `
+  --database hrr_feedback --user <管理员账号> `
   --schema medical_report_kb `
-  --apply --confirm-database <数据库名> `
+  --apply --confirm-database hrr_feedback `
   --output reader-apply-result.json
 ```
 

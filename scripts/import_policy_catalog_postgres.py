@@ -14,7 +14,28 @@ from knowledge_db import load_json, now_iso, stable_id
 from postgres_knowledge_db import add_connection_arguments, apply_migrations, connect, jsonb, validate_schema
 
 
-IMPORTER_VERSION = "policy-catalog-postgres-v1"
+IMPORTER_VERSION = "policy-catalog-postgres-v2"
+JURISDICTION_LEVELS = {"national", "province", "prefecture", "county", "unclassified"}
+NATIONAL_AUTHORITY_LABELS = {"国家", "国家级", "中央", "国务院", "部委", "司局"}
+
+
+def normalize_jurisdiction(record: dict[str, Any]) -> None:
+    level = str(record.get("jurisdiction_level") or "").strip().casefold()
+    authority = str(record.get("authority_level_label") or "").strip()
+    if not level and authority in NATIONAL_AUTHORITY_LABELS:
+        level = "national"
+    if not level:
+        level = "unclassified"
+    if level not in JURISDICTION_LEVELS:
+        raise ValueError(f"unsupported policy jurisdiction_level: {level}")
+    code = str(record.get("jurisdiction_code") or "").strip()
+    name = str(record.get("jurisdiction_name") or "").strip()
+    if level == "national":
+        code = code or "100000"
+        name = name or "全国"
+    record["jurisdiction_level"] = level
+    record["jurisdiction_code"] = code
+    record["jurisdiction_name"] = name
 
 
 def normalize_catalog(payload: dict[str, Any]) -> dict[str, Any]:
@@ -32,6 +53,7 @@ def normalize_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     rows: set[int] = set()
     entry_ids: set[str] = set()
     for record in sorted(records, key=lambda item: (item.get("source_row", 0), str(item.get("title", "")))):
+        normalize_jurisdiction(record)
         index_no = str(record.get("source_index_no", "")).strip()
         source_row = record.get("source_row")
         if not index_no:
@@ -143,6 +165,9 @@ def import_catalog(connection, payload: dict[str, Any], *, publish: bool, schema
                     record.get("catalog_group_code", ""),
                     record.get("catalog_group_name", ""),
                     record.get("authority_level_label", ""),
+                    record["jurisdiction_level"],
+                    record["jurisdiction_code"],
+                    record["jurisdiction_name"],
                     record.get("category_name", ""),
                     record.get("keyword_text", ""),
                     jsonb(record.get("keyword_tags", [])),
@@ -169,16 +194,20 @@ def import_catalog(connection, payload: dict[str, Any], *, publish: bool, schema
             f"""
             INSERT INTO {schema}.policy_catalog_entry (
               catalog_entry_id,catalog_id,source_row,source_index_no,index_occurrence,index_conflict,identity_key,
-              catalog_group_code,catalog_group_name,authority_level_label,category_name,
+              catalog_group_code,catalog_group_name,authority_level_label,
+              jurisdiction_level,jurisdiction_code,jurisdiction_name,category_name,
               keyword_text,keyword_tags,document_no,title,publish_date,publish_date_raw,
               issuer,file_count,notes,external_url,verification_status,entry_status,row_hash,metadata
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (catalog_entry_id) DO UPDATE SET
               source_row=EXCLUDED.source_row,source_index_no=EXCLUDED.source_index_no,
               index_occurrence=EXCLUDED.index_occurrence,index_conflict=EXCLUDED.index_conflict,
               identity_key=EXCLUDED.identity_key,catalog_group_code=EXCLUDED.catalog_group_code,
               catalog_group_name=EXCLUDED.catalog_group_name,
               authority_level_label=EXCLUDED.authority_level_label,
+              jurisdiction_level=EXCLUDED.jurisdiction_level,
+              jurisdiction_code=EXCLUDED.jurisdiction_code,
+              jurisdiction_name=EXCLUDED.jurisdiction_name,
               category_name=EXCLUDED.category_name,keyword_text=EXCLUDED.keyword_text,
               keyword_tags=EXCLUDED.keyword_tags,document_no=EXCLUDED.document_no,
               title=EXCLUDED.title,publish_date=EXCLUDED.publish_date,

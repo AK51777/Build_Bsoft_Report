@@ -158,6 +158,12 @@ class PostgresKnowledgeRepositoryTests(unittest.TestCase):
             self.assertEqual(
                 len({record["catalog_entry_id"] for record in normalized["records"]}), 2
             )
+            self.assertTrue(
+                all(record["jurisdiction_level"] == "national" for record in normalized["records"])
+            )
+            self.assertTrue(
+                all(record["jurisdiction_code"] == "100000" for record in normalized["records"])
+            )
             validate_catalog(payload)
 
     def test_policy_catalog_validation_rejects_duplicate_source_row(self) -> None:
@@ -196,6 +202,15 @@ class PostgresKnowledgeRepositoryTests(unittest.TestCase):
             migration_dir() / "006_runtime_policy_catalog.sql"
         ).read_text(encoding="utf-8")
         self.assertIn("CREATE OR REPLACE VIEW medical_report_kb.runtime_policy_catalog", catalog_view_sql)
+
+    def test_policy_catalog_jurisdiction_migration_is_runtime_visible(self) -> None:
+        migration_sql = (
+            migration_dir() / "011_policy_catalog_jurisdiction.sql"
+        ).read_text(encoding="utf-8")
+        for column in ("jurisdiction_level", "jurisdiction_code", "jurisdiction_name"):
+            self.assertIn(column, migration_sql)
+        self.assertIn("authority_level_label IN", migration_sql)
+        self.assertIn("runtime_policy_catalog_entry", migration_sql)
 
     def test_capability_match_scope_migration_appends_view_column(self) -> None:
         migration_sql = (
@@ -334,6 +349,29 @@ class PostgresKnowledgeRepositoryTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "clause is not verified"):
             validate_policies(payload, publish=True)
+
+    def test_published_policy_requires_safe_summary_and_section_permissions(self) -> None:
+        policy = {
+            "title": "测试政策",
+            "issuer": "测试机关",
+            "official_url": "https://example.gov.cn/policy",
+            "verification_status": "verified",
+            "clauses": [
+                {
+                    "original_text": "支持医疗机构依法依规推进信息化建设。",
+                    "normalized_summary": "",
+                    "permitted_sections": ["basis", "policy_background"],
+                    "verification_status": "verified",
+                }
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "normalized_summary is missing"):
+            validate_policies({"policies": [policy]}, publish=True)
+        policy["clauses"][0]["normalized_summary"] = "支持依法依规推进信息化建设。"
+        policy["clauses"][0]["permitted_sections"] = []
+        with self.assertRaisesRegex(ValueError, "permitted_sections is missing"):
+            validate_policies({"policies": [policy]}, publish=True)
+
 
     def test_sqlite_snapshot_is_idempotent_and_hash_bound(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

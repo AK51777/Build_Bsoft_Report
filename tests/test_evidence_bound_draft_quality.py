@@ -12,16 +12,17 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = SKILL_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from benchmark_report_quality import evaluate, template_skeleton  # noqa: E402
+from benchmark_report_quality import docx_content_profile, evaluate, template_skeleton  # noqa: E402
 from build_dynamic_construction_outline import presentation_title  # noqa: E402
 from build_evidence_bound_initial_drafts import (  # noqa: E402
     CHAPTER_ARGUMENT_OUTLINES,
     ensure_minimum_length,
     feature_control_profile,
     generic_section,
+    policy_background_section,
     policy_section,
 )
-from validate_section_draft import visible_length  # noqa: E402
+from validate_section_draft import assess_content, visible_length  # noqa: E402
 
 
 class EvidenceBoundDraftQualityTests(unittest.TestCase):
@@ -84,86 +85,131 @@ class EvidenceBoundDraftQualityTests(unittest.TestCase):
         self.assertIn("规则来源", reminder_design)
         self.assertNotIn("数据提供方", reminder_design)
 
-    def test_policy_and_standard_material_are_split_without_internal_tags(self) -> None:
+    def test_four_basis_groups_and_three_level_policy_background_are_generated(self) -> None:
         project = {"official_name": "测试医院信息化建设项目"}
         material = {
-            "basis_entries": [
-                {
+            "match_run_id": "POLICYMATCHRUN-TEST",
+            "material_signature": "a" * 64,
+            "basis_groups": {
+                "policy_basis": [{
                     "policy_id": "POLICY-1",
-                    "policy_type": "policy",
+                    "clause_ids": ["CLAUSE-1"],
                     "title": "公立医院高质量发展意见",
                     "document_no": "国办发〔2021〕18号",
-                    "issuer": "国务院办公厅",
-                    "publish_date": "2021-06-04",
-                    "delivery_eligible": False,
-                },
-                {
+                }],
+                "industry_standard": [{
                     "policy_id": "STANDARD-1",
-                    "policy_type": "evaluation_rule",
+                    "clause_ids": ["CLAUSE-2"],
                     "title": "电子病历系统应用水平分级评价标准",
                     "document_no": "国卫办医函〔2018〕1079号",
-                    "issuer": "国家卫生健康委办公厅",
-                    "publish_date": "2018-12-03",
-                    "delivery_eligible": False,
-                },
-            ],
-            "background_paragraphs": [
-                {
-                    "policy_id": "POLICY-1",
-                    "title": "公立医院高质量发展意见",
-                    "text": "该文件用于说明项目建设方向和公共价值。",
-                    "topic_tags": ["high_quality_hospital"],
-                },
-                {
-                    "policy_id": "STANDARD-1",
-                    "title": "电子病历系统应用水平分级评价标准",
-                    "text": "该文件用于明确电子病历评价对象和取证要求。",
-                    "topic_tags": ["electronic_medical_record", "evaluation"],
-                },
-            ],
-            "catalog_candidates": [
-                {
-                    "basis_group": "policy",
+                }],
+                "security_standard": [{
+                    "policy_id": "SECURITY-1",
+                    "clause_ids": ["CLAUSE-3"],
+                    "title": "信息安全技术 网络安全等级保护基本要求",
+                    "document_no": "GB/T 22239—2019",
+                }],
+                "investment_basis": [{
+                    "policy_id": "INVESTMENT-1",
+                    "clause_ids": ["CLAUSE-4"],
+                    "title": "软件工程 软件开发成本度量规范",
+                    "document_no": "GB/T 36964—2018",
+                }],
+            },
+            "working_basis_groups": {
+                "policy_basis": [{
                     "title": "《十四五全民健康信息化规划》",
                     "document_no": "国卫规划发〔2022〕30号",
-                    "issuer": "国家卫生健康委",
-                    "publish_date": "2022-11-09",
+                }],
+                "industry_standard": [],
+                "security_standard": [],
+                "investment_basis": [],
+            },
+            "policy_background_groups": {
+                "national": [{
+                    "policy_id": "POLICY-1",
+                    "clause_ids": ["CLAUSE-1"],
+                    "text_hash": "b" * 64,
+                    "text": "《公立医院高质量发展意见》提出推进智慧医院和医院信息标准化建设。",
+                }],
+                "province": [],
+                "prefecture": [],
+            },
+            "policy_background_candidate_groups": {
+                "national": [{"title": "《十四五全民健康信息化规划》"}],
+                "province": [],
+                "prefecture": [],
+            },
+            "working_policy_background_is_ordered_subsequence": True,
+            "quality": {
+                "formal_basis": {
+                    section: {"gap": 0}
+                    for section in (
+                        "policy_basis", "industry_standard", "security_standard", "investment_basis"
+                    )
                 },
-                {
-                    "basis_group": "standard",
-                    "title": "《医院智慧服务分级评估标准体系》",
-                    "document_no": "国卫办医函〔2019〕236号",
-                    "issuer": "国家卫生健康委办公厅",
-                    "publish_date": "2019-03-18",
+                "formal_background": {
+                    "national": {"gap": 0},
+                    "province": {"gap": 2},
+                    "prefecture": {"gap": 1},
                 },
-            ],
+                "candidate_basis": {"groups": {}},
+                "delivery_blockers": ["formal_policy_background_province_gap:2"],
+            },
         }
-        policy = "\n".join(policy_section(
+        basis = "\n".join(policy_section(
             project,
-            {"chapter_code": "1.2.1", "section_title": "政策法规依据"},
+            {"chapter_code": "1.2.1", "section_title": "可行性研究报告编制依据"},
+            material,
+            ["编制依据表"],
+        ))
+        governance = "\n".join(policy_section(
+            project,
+            {"chapter_code": "1.2.2", "section_title": "编制依据适用与动态更新"},
             material,
             [],
         ))
-        standard = "\n".join(policy_section(
+        background = "\n".join(policy_background_section(
             project,
-            {"chapter_code": "1.2.2", "section_title": "标准规范依据"},
+            {"chapter_code": "2.1.1", "section_title": "政策背景"},
             material,
-            [],
         ))
-        self.assertIn("公立医院高质量发展意见", policy)
-        self.assertNotIn("电子病历系统应用水平分级评价标准", policy)
-        self.assertIn("电子病历系统应用水平分级评价标准", standard)
-        self.assertNotIn("公立医院高质量发展意见", standard)
-        self.assertIn("十四五全民健康信息化规划", policy)
-        self.assertNotIn("医院智慧服务分级评估标准体系", policy)
-        self.assertIn("医院智慧服务分级评估标准体系", standard)
-        self.assertIn("不得据标题扩写政策要求", policy + standard)
-        self.assertIn("#### 1.2.1.1 政策筛选与采用原则", policy)
-        self.assertIn("#### 1.2.2.4 执行取证与版本更新", standard)
-        self.assertNotIn("引用《", policy + standard)
-        self.assertNotIn("正式报审前还需复核", policy + standard)
-        for tag in ("high_quality_hospital", "electronic_medical_record", "evaluation"):
-            self.assertNotIn(tag, policy + standard)
+        for heading in ("政策类依据", "行业标准依据", "安全类标准依据", "投资估算编制依据"):
+            self.assertIn(heading, basis)
+        self.assertIn("公立医院高质量发展意见", basis)
+        self.assertIn("电子病历系统应用水平分级评价标准", basis)
+        self.assertIn("网络安全等级保护基本要求", basis)
+        self.assertIn("软件开发成本度量规范", basis)
+        self.assertIn("十四五全民健康信息化规划", basis)
+        self.assertIn("【待核验】", basis)
+        self.assertIn("| 序号 | 依据名称 | 文号/标准号 | 使用状态 |", basis)
+        self.assertIn('match-run="POLICYMATCHRUN-TEST"', basis)
+        self.assertIn('signature="' + "a" * 64 + '"', basis)
+        self.assertIn('policy-item id="POLICY-1" clauses="CLAUSE-1"', basis)
+        basis_assessment = assess_content(
+            basis,
+            {
+                "chapter_code": "1.2.1",
+                "section_role": "basis",
+                "required_tables_json": '["编制依据表"]',
+            },
+            [],
+            mode="working",
+        )
+        self.assertNotIn(
+            "required_table_missing",
+            {issue["code"] for issue in basis_assessment["issues"]},
+        )
+        self.assertIn("#### 1.2.2.4 版本更新机制", governance)
+        self.assertNotIn("电子病历系统应用水平分级评价标准", governance)
+        for heading in ("国家政策背景", "省/自治区政策背景", "市/项目建设地区政策背景"):
+            self.assertIn(heading, background)
+        self.assertIn("提出推进智慧医院", background)
+        self.assertIn('policy-background id="POLICY-1" clauses="CLAUSE-1"', background)
+        self.assertIn("仅列为核验任务", background)
+        self.assertNotIn("电子病历系统应用水平分级评价标准", background)
+        self.assertNotIn("引用《", basis + governance + background)
+        self.assertNotIn("正式报审前还需复核", basis + governance + background)
 
     def test_public_outline_titles_remove_company_branding(self) -> None:
         title = presentation_title("创业慧康 BsoftGPT 医院信息平台")
@@ -184,6 +230,41 @@ class EvidenceBoundDraftQualityTests(unittest.TestCase):
         self.assertIn(
             "template_prose_residue",
             {item["code"] for item in result["blockers"]},
+        )
+
+    def test_benchmark_uses_four_basis_groups_and_confirmed_hard_minimums(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "four-groups.docx"
+            document = Document()
+            for heading, title in (
+                ("政策类依据", "测试政策文件"),
+                ("行业标准依据", "测试行业标准"),
+                ("安全类标准依据", "测试安全标准"),
+                ("投资估算编制依据", "测试投资依据"),
+            ):
+                document.add_heading(heading, level=4)
+                document.add_paragraph(f"《{title}》")
+            document.save(path)
+            profile = docx_content_profile(path)
+            result = evaluate(path)
+
+        self.assertEqual(
+            profile["basis_group_title_mentions"],
+            {
+                "policy_basis": 1,
+                "industry_standard": 1,
+                "security_standard": 1,
+                "investment_basis": 1,
+            },
+        )
+        codes = {item["code"] for item in result["blockers"]}
+        self.assertTrue(
+            {
+                "policy_basis_hard_minimum",
+                "industry_standard_hard_minimum",
+                "security_standard_hard_minimum",
+                "investment_basis_hard_minimum",
+            }.issubset(codes)
         )
 
     def test_template_skeleton_normalizes_topic_and_scope_substitution(self) -> None:

@@ -10,11 +10,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+from build_policy_section_material import build_material as build_policy_material
 from chapter_rules import resolve_chapter_rule
 from knowledge_db import apply_migrations, connect, dump_json, now_iso, sha256_text
+from match_policy_catalog_candidates import SECTION_ORDER
+from validate_project_gates import policy_material_quality_checks
 
 
-PLACEHOLDER_PATTERN = re.compile(r"【(?:待补充|待确认|冲突|分析建议)[^】]*】")
+PLACEHOLDER_PATTERN = re.compile(r"【(?:待补充|待确认|待核验|冲突|分析建议)[^】]*】")
 HIGH_RISK_NUMBER_PATTERN = re.compile(
     r"(?:目标|达到|不低于|不高于|不少于|不超过|提升|降低|投资|工期|上线|等级)[^。；\n]{0,28}"
     r"(?:\d+(?:\.\d+)?\s*(?:%|万元|亿元|天|月|年|级|个|套|项))"
@@ -22,6 +25,47 @@ HIGH_RISK_NUMBER_PATTERN = re.compile(
 EVIDENCE_MARKER_PATTERN = re.compile(r"<!--\s*evidence\s*:\s*([^>]+?)\s*-->", re.I)
 STANDARD_BLOCK_MARKER_PATTERN = re.compile(
     r"<!--\s*standard-blocks\s*:\s*([^>]+?)\s*-->", re.I
+)
+UNRESOLVED_FACT_MARKER_PATTERN = re.compile(
+    r"<!--\s*unresolved-fact\s*:\s*([^>]+?)\s*-->", re.I
+)
+CURRENT_STATE_DIMENSION_PATTERN = re.compile(
+    r"<!--\s*current-state-dimension\s*:\s*([a-z_]+)\s*-->", re.I
+)
+CURRENT_STATE_REQUIRED_DIMENSIONS = {
+    "application",
+    "data_interface",
+    "infrastructure",
+    "security",
+    "operation",
+}
+ASSESSMENT_LEVEL_PATTERN = re.compile(
+    r"(?:[一二三四五六七八九]|\d)(?:级甲等|级|甲等)|四甲|4A",
+    re.I,
+)
+POLICY_MATERIAL_MARKER_PATTERN = re.compile(
+    r'<!--\s*policy-material\s+chapter="([^"]*)"\s+match-run="([^"]*)"\s+'
+    r'signature="([^"]*)"\s*-->',
+    re.I,
+)
+POLICY_ITEM_MARKER_PATTERN = re.compile(
+    r'<!--\s*policy-item\s+id="([^"]*)"\s+clauses="([^"]*)"\s*-->', re.I
+)
+POLICY_BACKGROUND_MARKER_PATTERN = re.compile(
+    r'<!--\s*policy-background\s+id="([^"]*)"\s+clauses="([^"]*)"\s+'
+    r'text-hash="([^"]*)"\s*-->',
+    re.I,
+)
+BASIS_SECTION_HEADINGS = (
+    ("policy_basis", "政策类依据"),
+    ("industry_standard", "行业标准依据"),
+    ("security_standard", "安全类标准依据"),
+    ("investment_basis", "投资估算编制依据"),
+)
+POLICY_BACKGROUND_HEADINGS = (
+    "国家政策背景",
+    "省/自治区政策背景",
+    "市/项目建设地区政策背景",
 )
 
 
@@ -55,6 +99,275 @@ def normalized_standard_text(text: str, forbidden_terms: list[str] | None = None
     }.items():
         value = value.replace(source, target)
     return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value).casefold()
+
+
+def fact_assessment_framework(fact_key: str, fact_content: str) -> str:
+    key = fact_key.casefold()
+    text = fact_content.casefold()
+    if "电子病历" in fact_content or ".emr" in key:
+        return "emr"
+    if "互联互通" in fact_content or "interop" in key:
+        return "interoperability"
+    if "智慧服务" in fact_content or "smart_service" in key:
+        return "smart_service"
+    if "智慧管理" in fact_content or "smart_management" in key:
+        return "smart_management"
+    return ""
+
+
+def fact_assessment_kind(fact_key: str) -> str:
+    key = fact_key.casefold()
+    if key.startswith("acceptance.") or ".target" in key or key.endswith(".target"):
+        return "target"
+    if "assessment" in key:
+        return "current"
+    return ""
+
+
+def fact_assessment_levels(fact_content: str) -> set[str]:
+    return {
+        re.sub(r"\s+", "", match.group(0)).casefold()
+        for match in ASSESSMENT_LEVEL_PATTERN.finditer(fact_content)
+    }
+
+
+def _marker_clause_ids(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _normalized_block(value: str) -> str:
+    return re.sub(r"\s+", "", value)
+
+
+def policy_content_quality_issues(
+    content: str,
+    chapter_code: str,
+    material: dict[str, Any] | None,
+    *,
+    mode: str,
+    material_error: str = "",
+    check_quality_gates: bool = True,
+) -> list[dict[str, str]]:
+    severity = "warning" if mode == "working" else "blocking"
+    issues: list[dict[str, str]] = []
+
+    def add(code: str, description: str, *, force_blocking: bool = False) -> None:
+        issues.append(
+            {
+                "code": code,
+                "description": description,
+                "severity": "blocking" if force_blocking else severity,
+            }
+        )
+
+    if chapter_code not in {"1.2.1", "2.1.1"}:
+        return issues
+    if material is None:
+        add(
+            "policy_material_unavailable",
+            "无法重建当前政策章节材料：" + (material_error or "材料不可用"),
+        )
+        return issues
+
+    if mode == "delivery" and check_quality_gates:
+        for check in policy_material_quality_checks(material):
+            if check["result"] == "fail":
+                add(
+                    "policy_quality_gate_failed",
+                    f"{check['gate_code']}：{check['message']}",
+                    force_blocking=True,
+                )
+
+    material_markers = POLICY_MATERIAL_MARKER_PATTERN.findall(content)
+    expected_material_marker = (
+        chapter_code,
+        str(material.get("match_run_id") or ""),
+        str(material.get("material_signature") or ""),
+    )
+    if material_markers != [expected_material_marker]:
+        add(
+            "policy_material_signature_mismatch",
+            "正文未唯一绑定当前政策匹配运行、项目事实/范围和政策材料签名。",
+        )
+
+    if chapter_code == "1.2.1":
+        expected_items = [
+            item
+            for section in SECTION_ORDER
+            for item in material.get("basis_groups", {}).get(section, [])
+        ]
+        expected_markers = [
+            (
+                str(item.get("policy_id") or ""),
+                [str(value) for value in item.get("clause_ids", [])],
+            )
+            for item in expected_items
+        ]
+        actual_markers = [
+            (policy_id, _marker_clause_ids(clause_ids))
+            for policy_id, clause_ids in POLICY_ITEM_MARKER_PATTERN.findall(content)
+        ]
+        if actual_markers != expected_markers:
+            add(
+                "policy_basis_items_mismatch",
+                "正文四类依据中的政策ID、条款ID、数量或顺序与当前正式材料不一致。",
+            )
+        formal_rows = [
+            line
+            for line in content.splitlines()
+            if re.match(r"^\s*\|\s*(?:\d+|—)\s*\|", line)
+        ]
+        expected_rows = []
+        for section, _heading in BASIS_SECTION_HEADINGS:
+            for index, item in enumerate(material.get("basis_groups", {}).get(section, []), 1):
+                title = str(item.get("title") or "").strip().strip("《》〈〉")
+                document_no = str(item.get("document_no") or "—").strip()
+                clause_ids = ",".join(
+                    str(value) for value in item.get("clause_ids", [])
+                )
+                expected_rows.append(
+                    "| "
+                    + " | ".join(
+                        value.replace("|", "\\|").replace("\n", " ")
+                        for value in (str(index), f"《{title}》", document_no, "正式采用")
+                    )
+                    + " | "
+                    + f'<!-- policy-item id="{item.get("policy_id", "")}" clauses="{clause_ids}" -->'
+                )
+        if len(formal_rows) != len(expected_rows):
+            add(
+                "policy_basis_visible_row_count_mismatch",
+                "正文全部可见依据数据行数与当前正式材料不一致。",
+            )
+        elif [_normalized_block(row) for row in formal_rows] != [
+            _normalized_block(row) for row in expected_rows
+        ]:
+            add(
+                "policy_basis_visible_row_mismatch",
+                "正式依据的分组序号、名称、文号、状态或追踪标记与当前材料不一致。",
+            )
+        if mode == "delivery":
+            stripped = re.sub(r"<!--.*?-->", "", content, flags=re.S)
+            actual_visible_lines = [
+                line.strip() for line in stripped.splitlines() if line.strip()
+            ]
+            intro = (
+                f"本节依据{material.get('project_name', '')}的项目类型、建设范围、属地和投资管理事实，"
+                "按政策类、行业标准、安全类标准和投资估算四组列示编制依据。"
+                "正式采用的政策必须具备现行有效的官方文件和已核验条款；待核验目录项只保留名称，不据其标题扩写政策要求。"
+            )
+            expected_visible_lines = [intro]
+            for index, (section, heading) in enumerate(BASIS_SECTION_HEADINGS, 1):
+                expected_visible_lines.extend(
+                    [
+                        f"#### {chapter_code}.{index} {heading}",
+                        "| 序号 | 依据名称 | 文号/标准号 | 使用状态 |",
+                        "|---:|---|---|---|",
+                    ]
+                )
+                expected_visible_lines.extend(
+                    re.sub(r"<!--.*?-->", "", row, flags=re.S).strip()
+                    for row in expected_rows[
+                        sum(
+                            len(material.get("basis_groups", {}).get(previous, []))
+                            for previous, _ in BASIS_SECTION_HEADINGS[: index - 1]
+                        ) : sum(
+                            len(material.get("basis_groups", {}).get(previous, []))
+                            for previous, _ in BASIS_SECTION_HEADINGS[:index]
+                        )
+                    ]
+                )
+            allowed_sequences = (
+                expected_visible_lines,
+                [expected_visible_lines[0], "**编制依据表**", *expected_visible_lines[1:]],
+            )
+            normalized_actual = [_normalized_block(line) for line in actual_visible_lines]
+            if normalized_actual not in (
+                [_normalized_block(line) for line in sequence]
+                for sequence in allowed_sequences
+            ):
+                add(
+                    "policy_basis_unbound_content",
+                    "编制依据章节包含当前正式四类清单之外的标题、表格行或政策陈述。",
+                    force_blocking=True,
+                )
+    else:
+        expected_background = list(material.get("background_paragraphs", []))
+        expected_markers = [
+            (
+                str(item.get("policy_id") or ""),
+                [str(value) for value in item.get("clause_ids", [])],
+                str(item.get("text_hash") or ""),
+            )
+            for item in expected_background
+        ]
+        marker_matches = list(POLICY_BACKGROUND_MARKER_PATTERN.finditer(content))
+        actual_markers = [
+            (match.group(1), _marker_clause_ids(match.group(2)), match.group(3))
+            for match in marker_matches
+        ]
+        if actual_markers != expected_markers:
+            add(
+                "policy_background_items_mismatch",
+                "政策背景的政策ID、条款ID、段落哈希或顺序与政策类依据链不一致。",
+            )
+        else:
+            for marker, expected in zip(marker_matches, expected_background):
+                tail = content[marker.end() :]
+                paragraph = next(
+                    (
+                        line.strip()
+                        for line in tail.splitlines()
+                        if line.strip() and not line.lstrip().startswith("<!--")
+                    ),
+                    "",
+                )
+                if sha256_text(paragraph) != str(expected.get("text_hash") or ""):
+                    add(
+                        "policy_background_paragraph_hash_mismatch",
+                        f"政策背景正文与已核验条款生成段落不一致：{expected.get('title', '')}。",
+                    )
+                    break
+        if mode == "delivery":
+            actual_headings = [
+                line.strip()
+                for line in content.splitlines()
+                if line.lstrip().startswith("#")
+            ]
+            expected_headings = [
+                f"#### {chapter_code}.{index} {heading}"
+                for index, heading in enumerate(POLICY_BACKGROUND_HEADINGS, 1)
+            ]
+            if actual_headings != expected_headings:
+                add(
+                    "policy_background_heading_mismatch",
+                    "政策背景必须且只能保留国家、省/自治区、市/项目地区三个固定层级标题及顺序。",
+                    force_blocking=True,
+                )
+            stripped = re.sub(r"<!--.*?-->", "", content, flags=re.S)
+            blocks = []
+            for block in re.split(r"\n\s*\n", stripped):
+                lines = [
+                    line.strip()
+                    for line in block.splitlines()
+                    if line.strip() and not line.lstrip().startswith("#")
+                ]
+                if lines:
+                    blocks.append(" ".join(lines))
+            intro = (
+                f"{material.get('project_name', '')}政策背景按照国家、省或自治区、市或项目建设地区三个层级展开。"
+                "本节政策顺序与前述政策类依据一致，且每段只改写已核验条款；仅有目录标题的文件不生成政策要求正文。"
+            )
+            allowed = [intro, *[str(item.get("text") or "") for item in expected_background]]
+            if [_normalized_block(item) for item in blocks] != [
+                _normalized_block(item) for item in allowed
+            ]:
+                add(
+                    "policy_background_unbound_prose",
+                    "政策背景包含未绑定到当前已核验条款的新增、缺失或改写正文。",
+                    force_blocking=True,
+                )
+    return issues
 
 
 def assess_content(
@@ -105,7 +418,7 @@ def assess_content(
     if PLACEHOLDER_PATTERN.search(content):
         add(
             "unresolved_placeholder",
-            "章节仍含待补充、待确认、冲突或分析建议占位。",
+            "章节仍含待补充、待确认、待核验、冲突或分析建议占位。",
             "warning" if mode == "working" else "blocking",
         )
     if re.search(r"^#{8,}\s", content, flags=re.M):
@@ -140,11 +453,187 @@ def assess_content(
         for item in re.split(r"[,，;；\s]+", marker)
         if item.strip()
     }
+    unresolved_marker_ids = {
+        item.strip()
+        for marker in UNRESOLVED_FACT_MARKER_PATTERN.findall(content)
+        for item in re.split(r"[,，;；\s]+", marker)
+        if item.strip()
+    }
     invalid_marker_ids = sorted(marker_ids - valid_evidence_ids)
     if invalid_marker_ids:
         add("invalid_evidence_marker", "来源标记不属于本章节任务包：" + "、".join(invalid_marker_ids[:10]))
-    if HIGH_RISK_NUMBER_PATTERN.search(content) and not marker_ids:
+    if HIGH_RISK_NUMBER_PATTERN.search(content) and not (
+        marker_ids or unresolved_marker_ids
+    ):
         add("ungrounded_quantitative_assertion", "章节包含高风险数字结论，但没有 `<!-- evidence:来源ID -->` 标记。")
+
+    current_state_metrics: dict[str, Any] | None = None
+    if contract_validation.get("require_current_state_fact_traceability"):
+        direct_facts = [
+            source
+            for source in sources
+            if source.get("source_type") == "fact"
+            and source.get("usage_mode") in {"direct", "evidence"}
+        ]
+        direct_fact_ids = {
+            str(source.get("source_object_id") or "") for source in direct_facts
+        }
+        facts_without_evidence = sorted(
+            str(source.get("source_object_id") or "")
+            for source in direct_facts
+            if int(source.get("evidence_count") or 0) < 1
+        )
+        facts_not_cited = sorted(direct_fact_ids - marker_ids)
+        invalid_direct_statuses = sorted(
+            str(source.get("source_object_id") or "")
+            for source in direct_facts
+            if source.get("fact_status") not in {"confirmed", "material_explicit"}
+        )
+        if facts_without_evidence:
+            add(
+                "current_state_fact_without_evidence",
+                "确定性现状事实没有证据记录：" + "、".join(facts_without_evidence[:20]),
+            )
+        if facts_not_cited:
+            add(
+                "current_state_fact_not_cited",
+                "确定性现状事实未在正文绑定来源标记：" + "、".join(facts_not_cited[:20]),
+            )
+        if invalid_direct_statuses:
+            add(
+                "current_state_invalid_direct_fact_status",
+                "非确认状态事实被作为确定性现状来源：" + "、".join(invalid_direct_statuses[:20]),
+            )
+        current_state_metrics = {
+            "direct_fact_count": len(direct_facts),
+            "fact_with_evidence_count": len(direct_facts) - len(facts_without_evidence),
+            "cited_fact_count": len(direct_fact_ids & marker_ids),
+            "deterministic_fact_source_coverage": (
+                1.0
+                if not direct_facts
+                else (len(direct_facts) - len(facts_without_evidence)) / len(direct_facts)
+            ),
+            "deterministic_fact_citation_coverage": (
+                1.0
+                if not direct_facts
+                else len(direct_fact_ids & marker_ids) / len(direct_facts)
+            ),
+        }
+
+    if contract_validation.get("require_unresolved_fact_disclosure"):
+        unresolved_facts = {
+            str(source.get("source_object_id") or "")
+            for source in sources
+            if source.get("source_type") == "fact"
+            and source.get("usage_mode") not in {"direct", "evidence"}
+            and source.get("fact_status")
+            in {"pending_confirmation", "pending_supplement", "conflict"}
+        }
+        missing_unresolved = sorted(unresolved_facts - unresolved_marker_ids)
+        invalid_unresolved = sorted(
+            unresolved_marker_ids
+            - {
+                str(source.get("source_object_id") or "")
+                for source in sources
+                if source.get("source_type") == "fact"
+            }
+        )
+        if missing_unresolved:
+            add(
+                "current_state_unresolved_fact_not_disclosed",
+                "待确认、待补充或冲突现状事实未显式披露："
+                + "、".join(missing_unresolved[:20]),
+            )
+        if invalid_unresolved:
+            add(
+                "invalid_unresolved_fact_marker",
+                "待核实事实标记不属于本章节任务包："
+                + "、".join(invalid_unresolved[:20]),
+            )
+
+    if contract_validation.get("require_current_state_dimensions"):
+        dimensions = {
+            item.casefold() for item in CURRENT_STATE_DIMENSION_PATTERN.findall(content)
+        }
+        missing_dimensions = sorted(CURRENT_STATE_REQUIRED_DIMENSIONS - dimensions)
+        if missing_dimensions:
+            add(
+                "current_state_dimension_incomplete",
+                "信息化现状维度不完整，缺少：" + "、".join(missing_dimensions),
+            )
+
+    if contract_validation.get("forbid_scope_as_current_state"):
+        current_fact_text = "；".join(
+            str(source.get("fact_content") or "")
+            for source in sources
+            if source.get("source_type") == "fact"
+            and source.get("usage_mode") in {"direct", "evidence"}
+        )
+        unsupported_scope_claims: list[str] = []
+        for source in sources:
+            if source.get("source_type") != "scope":
+                continue
+            name = str(source.get("standard_name") or "").strip()
+            if not name or name in current_fact_text:
+                continue
+            patterns = (
+                rf"(?:现有|已建|已建设|已部署|已上线|正在使用)[^。；\n]{{0,12}}{re.escape(name)}",
+                rf"{re.escape(name)}[^。；\n]{{0,12}}(?:现有|已建|已建设|已部署|已上线|正在使用)",
+            )
+            if any(re.search(pattern, content) for pattern in patterns):
+                unsupported_scope_claims.append(name)
+        if unsupported_scope_claims:
+            add(
+                "planned_scope_as_current_state",
+                "拟建清单被写成现状且没有现状事实支持："
+                + "、".join(sorted(set(unsupported_scope_claims))[:20]),
+            )
+
+    if contract_validation.get("enforce_assessment_state_separation"):
+        current_levels: dict[str, set[str]] = {}
+        target_levels: dict[str, set[str]] = {}
+        not_participated_frameworks: set[str] = set()
+        for source in sources:
+            if source.get("source_type") != "fact":
+                continue
+            key = str(source.get("fact_key") or "")
+            fact_text = str(source.get("fact_content") or "")
+            framework = fact_assessment_framework(key, fact_text)
+            kind = fact_assessment_kind(key)
+            if not framework or not kind:
+                continue
+            levels = fact_assessment_levels(fact_text)
+            (target_levels if kind == "target" else current_levels).setdefault(
+                framework, set()
+            ).update(levels)
+            if kind == "current" and ("未参评" in fact_text or "未参与" in fact_text):
+                not_participated_frameworks.add(framework)
+        for framework, levels in target_levels.items():
+            target_only = levels - current_levels.get(framework, set())
+            for level in target_only:
+                if re.search(
+                    rf"(?:已通过|已达到|已获评|当前(?:为|达到)|现状(?:为|达到))[^。；\n]{{0,24}}{re.escape(level)}",
+                    content,
+                    flags=re.I,
+                ):
+                    add(
+                        "assessment_target_as_current_state",
+                        f"评级目标被改写为当前已达到状态：{framework}/{level}",
+                    )
+        for framework in not_participated_frameworks:
+            zero_level_claim = re.search(
+                r"(?:未参评|未参与)[^。；\n]{0,50}(?:现状|评级|等级)(?:为|是|等同于|视为)(?:零级|0级)",
+                content,
+            )
+            capability_absence_claim = re.search(
+                r"(?:未参评|未参与)[^。；\n]{0,50}(?:因此|说明|表明|意味着|即)(?:医院)?(?:不具备[^。；\n]{0,12}能力|尚未建设)",
+                content,
+            )
+            if zero_level_claim or capability_absence_claim:
+                add(
+                    "assessment_not_participated_as_zero_or_absence",
+                    f"未参评被换算为零级或能力缺失：{framework}",
+                )
 
     forbidden_terms: set[str] = set()
     for source in sources:
@@ -227,7 +716,7 @@ def assess_content(
 
     blocking_count = sum(issue["severity"] == "blocking" for issue in issues)
     warning_count = sum(issue["severity"] == "warning" for issue in issues)
-    return {
+    result = {
         "status": "passed" if not blocking_count else "failed",
         "validation_mode": mode,
         "content_sha256": sha256_text(content),
@@ -241,6 +730,9 @@ def assess_content(
         "issues": issues,
         "validated_at": now_iso(),
     }
+    if current_state_metrics is not None:
+        result["current_state_metrics"] = current_state_metrics
+    return result
 
 
 def validate_draft(
@@ -251,6 +743,13 @@ def validate_draft(
     *,
     mode: str = "delivery",
 ) -> dict[str, Any]:
+    policy_material = None
+    policy_material_error = ""
+    if chapter_code in {"1.2.1", "2.1.1"}:
+        try:
+            policy_material = build_policy_material(database, project_code, mode=mode)
+        except ValueError as exc:
+            policy_material_error = str(exc)
     with connect(database.resolve()) as conn:
         apply_migrations(conn)
         project = conn.execute(
@@ -294,6 +793,28 @@ def validate_draft(
                     (source["source_object_id"],),
                 ).fetchone()
                 item["standard_name"] = row["standard_name"] if row else ""
+            elif source["source_type"] == "fact":
+                row = conn.execute(
+                    """
+                    SELECT fact_key,fact_content,normalized_value,fact_status
+                    FROM project_fact WHERE fact_id=?
+                    """,
+                    (source["source_object_id"],),
+                ).fetchone()
+                if row:
+                    item.update(dict(row))
+                evidence_rows = conn.execute(
+                    """
+                    SELECT e.source_location
+                    FROM fact_evidence fe
+                    JOIN evidence_record e ON e.evidence_id=fe.evidence_id
+                    WHERE fe.fact_id=? AND fe.evidence_role='support'
+                    ORDER BY e.evidence_id
+                    """,
+                    (source["source_object_id"],),
+                ).fetchall()
+                item["evidence_count"] = len(evidence_rows)
+                item["evidence_locations"] = [row["source_location"] for row in evidence_rows]
             elif source["source_type"] == "corpus":
                 row = conn.execute(
                     "SELECT clean_text,forbidden_terms_json FROM corpus_block WHERE block_id=?",
@@ -302,9 +823,51 @@ def validate_draft(
                 item["clean_text"] = row["clean_text"] if row else ""
                 item["forbidden_terms_json"] = row["forbidden_terms_json"] if row else "[]"
             sources.append(item)
+        if plan["section_role"] == "current_state":
+            known_scope_ids = {
+                str(source.get("source_object_id") or "")
+                for source in sources
+                if source.get("source_type") == "scope"
+            }
+            for row in conn.execute(
+                """
+                SELECT scope_id,standard_name FROM project_scope_item
+                WHERE project_id=? AND customer_scope=1
+                  AND status NOT IN ('rejected','not_applicable')
+                ORDER BY standard_name,scope_id
+                """,
+                (project["project_id"],),
+            ):
+                if row["scope_id"] in known_scope_ids:
+                    continue
+                sources.append(
+                    {
+                        "source_type": "scope",
+                        "source_object_id": row["scope_id"],
+                        "usage_mode": "survey_lead",
+                        "standard_name": row["standard_name"],
+                    }
+                )
         plan_data = dict(plan)
         plan_data["outline_nodes"] = outline_nodes
         result = assess_content(draft["content"], plan_data, sources, mode=mode)
+        policy_issues = policy_content_quality_issues(
+            draft["content"],
+            chapter_code,
+            policy_material,
+            mode=mode,
+            material_error=policy_material_error,
+        )
+        if policy_issues:
+            result["issues"].extend(policy_issues)
+            result["issue_count"] = len(result["issues"])
+            result["blocking_count"] = sum(
+                item["severity"] == "blocking" for item in result["issues"]
+            )
+            result["warning_count"] = sum(
+                item["severity"] == "warning" for item in result["issues"]
+            )
+            result["status"] = "failed" if result["blocking_count"] else "passed"
         conn.execute(
             "UPDATE draft_section_version SET check_result_json=?,updated_at=? WHERE draft_version_id=?",
             (dump_json(result), result["validated_at"], draft["draft_version_id"]),

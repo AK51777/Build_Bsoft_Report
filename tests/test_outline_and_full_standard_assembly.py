@@ -25,7 +25,7 @@ from ingest_scope_items_sqlite import ingest_scope_payload  # noqa: E402
 from init_project_workbench import initialize_project  # noqa: E402
 from knowledge_db import connect  # noqa: E402
 from map_scope_capabilities import map_capabilities  # noqa: E402
-from report_outline import build_outline_candidate, confirm_outline  # noqa: E402
+from report_outline import _fixed_subsections, build_outline_candidate, confirm_outline  # noqa: E402
 
 
 def blueprint_payload(section_title: str = "项目基本情况") -> dict:
@@ -82,6 +82,39 @@ def make_multi_block_standard(root: Path) -> tuple[Path, Path]:
 
 
 class ReportOutlineAuthorityTests(unittest.TestCase):
+    def test_policy_outline_uses_contract_headings_without_legacy_policy_children(self) -> None:
+        plans = [
+            {"plan_id": "P-BASIS", "chapter_code": "1.2.1", "section_role": "basis"},
+            {"plan_id": "P-GOV", "chapter_code": "1.2.2", "section_role": "basis"},
+            {
+                "plan_id": "P-BACKGROUND",
+                "chapter_code": "2.1.1",
+                "section_role": "policy_background",
+            },
+        ]
+
+        fixed = _fixed_subsections(None, plans)
+
+        self.assertEqual(
+            [item["title"] for item in fixed["P-BASIS"]],
+            ["政策类依据", "行业标准依据", "安全类标准依据", "投资估算编制依据"],
+        )
+        self.assertEqual(
+            [item["title"] for item in fixed["P-GOV"]],
+            ["来源与有效性复核", "项目适用性边界", "条款与建设内容映射", "版本更新机制"],
+        )
+        self.assertEqual(
+            [item["title"] for item in fixed["P-BACKGROUND"]],
+            ["国家政策背景", "省/自治区政策背景", "市/项目建设地区政策背景"],
+        )
+        self.assertFalse(
+            any(
+                item["metadata"].get("content_mode") == "verified_policy_heading"
+                for nodes in fixed.values()
+                for item in nodes
+            )
+        )
+
     def test_candidate_must_be_confirmed_and_stale_confirmation_cannot_assemble(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

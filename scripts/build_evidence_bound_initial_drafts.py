@@ -33,6 +33,80 @@ SCOPE_STATUS_LABELS = {
     "not_applicable": "不适用",
 }
 
+FACT_STATUS_LABELS = {
+    "confirmed": "【已确认】",
+    "material_explicit": "【材料明确】",
+    "pending_confirmation": "【待确认】",
+    "pending_supplement": "【待补充】",
+    "conflict": "【冲突】",
+    "analysis_recommendation": "【分析建议】",
+    "reference_only": "【仅作参考】",
+    "not_applicable": "【不适用】",
+}
+
+ASSESSMENT_FRAMEWORKS = (
+    (
+        "emr",
+        "电子病历系统应用水平",
+        ("acceptance.emr", "assessment.emr", "电子病历"),
+        "按项目采用的评价版本核查临床应用、数据质量、流程闭环和评价取证情况",
+    ),
+    (
+        "interoperability",
+        "医院信息互联互通标准化成熟度",
+        ("acceptance.interop", "acceptance.interoperability", "assessment.interop", "互联互通"),
+        "按项目采用的测评版本核查标准符合性、数据共享、平台服务和运行管理证据",
+    ),
+    (
+        "smart_service",
+        "医院智慧服务分级评估",
+        ("acceptance.smart_service", "assessment.smart_service", "智慧服务"),
+        "核查患者服务场景、线上线下衔接、实际使用和可取证运行记录",
+    ),
+    (
+        "smart_management",
+        "医院智慧管理分级评估",
+        ("acceptance.smart_management", "assessment.smart_management", "智慧管理"),
+        "核查运营管理场景、数据口径、管理闭环和实际应用证据",
+    ),
+)
+
+CURRENT_STATE_DIMENSIONS = (
+    ("application", "应用系统现状", "现有系统、厂商、版本、部署、使用科室、运行状态和利旧改造约束"),
+    ("data_interface", "数据与接口现状", "数据源、主数据、接口对象、交换方式、数据质量和异常处理"),
+    ("infrastructure", "基础环境现状", "计算、存储、网络、终端、机房或云资源及容量使用情况"),
+    ("security", "安全现状", "身份权限、网络与数据安全、密码应用、日志审计、备份和灾备"),
+    ("operation", "运维现状", "运维组织、监测告警、服务流程、配置变更、应急和值守情况"),
+)
+
+CURRENT_STATE_ANALYSIS_GUIDANCE = {
+    "application": (
+        "分析时应区分系统是否存在、功能是否启用、业务是否实际使用以及流程是否形成闭环，"
+        "不能仅凭系统名称判断能力成熟度。后续通过系统台账、版本授权、用户与科室范围、现场演示和运行记录，"
+        "识别利旧、升级或替换的真实约束，并区分软件功能、参数配置、流程执行、人员培训和管理机制等不同原因。"
+    ),
+    "data_interface": (
+        "分析时应沿业务数据流核对源系统、目标系统、交换方式、标准口径、失败重试、监测告警和对账责任，"
+        "接口数量或平台名称本身不能证明互联互通能力。后续以接口台账、报文样例、数据质量结果、异常记录和责任边界，"
+        "判断现有共享链路的覆盖范围、稳定状态及治理短板。"
+    ),
+    "infrastructure": (
+        "分析时应把已部署资源与实际负载、可用性、扩展余量和生命周期结合核实，不能由拟建规模反推现状容量不足。"
+        "后续通过设备与资源台账、部署拓扑、监控数据、维保状态和容量趋势，形成可支撑利旧判断和容量测算的基线；"
+        "缺少量化记录时只保留核查任务，不给出资源缺口数值。"
+    ),
+    "security": (
+        "分析时应分别核对制度要求、技术部署、配置启用、日志留存和实际处置，已有单项设备不能代表整体安全能力。"
+        "后续结合资产边界、身份权限、网络分区、数据保护、密码应用、审计、备份恢复及应急演练证据，"
+        "判断控制措施的覆盖对象和运行有效性；合规等级与整改结论须以专项测评或正式材料为准。"
+    ),
+    "operation": (
+        "分析时应从组织职责、受理分级、监测告警、工单处置、配置变更、备份巡检、应急和值守等环节检查闭环，"
+        "不能把存在运维人员等同于具备统一运维体系。后续以制度、工单、监控、变更、故障复盘和服务指标记录，"
+        "核实现有运行保障覆盖范围，并明确医院、厂商及第三方之间的责任界面。"
+    ),
+}
+
 
 ASPECT_GUIDANCE = {
     "项目定位与编制边界": (
@@ -952,7 +1026,7 @@ def generic_table(
     return [f"**{title}**", "", *markdown_table(headers, rows)]
 
 
-def policy_section(
+def _legacy_policy_section(
     project: dict[str, Any],
     plan: dict[str, Any],
     policy_material: dict[str, Any],
@@ -1130,6 +1204,216 @@ def policy_section(
             "",
         ]
     )
+    return lines
+
+
+BASIS_SECTION_HEADINGS = (
+    ("policy_basis", "政策类依据"),
+    ("industry_standard", "行业标准依据"),
+    ("security_standard", "安全类标准依据"),
+    ("investment_basis", "投资估算编制依据"),
+)
+
+
+def _basis_groups_from_material(
+    policy_material: dict[str, Any],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    formal = policy_material.get("basis_groups")
+    working = policy_material.get("working_basis_groups")
+    if formal is not None and working is not None:
+        return formal, working
+    formal = {section: [] for section, _ in BASIS_SECTION_HEADINGS}
+    working = {section: [] for section, _ in BASIS_SECTION_HEADINGS}
+
+    def legacy_section(item: dict[str, Any]) -> str:
+        policy_type = str(item.get("policy_type") or "").casefold()
+        if policy_type in {"evaluation_rule", "standard", "technical_standard", "specification"}:
+            return "industry_standard"
+        if re.search(r"网络安全|数据安全|个人信息|密码|等级保护", item.get("title", "")):
+            return "security_standard"
+        if re.search(r"投资|概算|估算|预算|成本度量", item.get("title", "")):
+            return "investment_basis"
+        if re.search(r"标准|规范|评价|测评|指南", item.get("title", "")):
+            return "industry_standard"
+        return "policy_basis"
+
+    for item in policy_material.get("basis_entries", []):
+        formal[legacy_section(item)].append(item)
+    for item in policy_material.get("catalog_candidates", []):
+        section = item.get("basis_section") or (
+            "industry_standard" if item.get("basis_group") == "standard" else "policy_basis"
+        )
+        working[section].append(item)
+    return formal, working
+
+
+def _policy_material_marker(chapter_code: str, policy_material: dict[str, Any]) -> str:
+    return (
+        f'<!-- policy-material chapter="{chapter_code}" '
+        f'match-run="{policy_material.get("match_run_id", "")}" '
+        f'signature="{policy_material.get("material_signature", "")}" -->'
+    )
+
+
+def _basis_table_row(index: int, item: dict[str, Any], *, candidate: bool) -> str:
+    title = str(item.get("title") or "待核验").strip().strip("《》〈〉")
+    document_no = str(item.get("document_no") or "—").strip()
+    status = "【待核验】仅作核验任务" if candidate else "正式采用"
+    cells = (str(index), f"《{title}》", document_no, status)
+    row = "| " + " | ".join(cell.replace("|", "\\|").replace("\n", " ") for cell in cells) + " |"
+    if candidate:
+        return row
+    clause_ids = ",".join(str(value) for value in item.get("clause_ids", []))
+    return (
+        f'{row} <!-- policy-item id="{item.get("policy_id", "")}" '
+        f'clauses="{clause_ids}" -->'
+    )
+
+
+def policy_section(
+    project: dict[str, Any],
+    plan: dict[str, Any],
+    policy_material: dict[str, Any],
+    required_tables: list[str],
+) -> list[str]:
+    if plan["chapter_code"] == "1.2.2":
+        return basis_governance_section(project, plan, policy_material)
+    formal_groups, working_groups = _basis_groups_from_material(policy_material)
+    lines = [
+        (
+            f"本节依据{project['official_name']}的项目类型、建设范围、属地和投资管理事实，"
+            "按政策类、行业标准、安全类标准和投资估算四组列示编制依据。"
+            "正式采用的政策必须具备现行有效的官方文件和已核验条款；待核验目录项只保留名称，不据其标题扩写政策要求。"
+        ),
+        "",
+        _policy_material_marker(plan["chapter_code"], policy_material),
+        "",
+    ]
+    if required_tables:
+        lines.extend([f"**{required_tables[0]}**", ""])
+    formal_quality = policy_material.get("quality", {}).get("formal_basis", {})
+    candidate_quality = (
+        policy_material.get("quality", {}).get("candidate_basis", {}).get("groups", {})
+    )
+    for index, (section, heading) in enumerate(BASIS_SECTION_HEADINGS, 1):
+        lines.extend([f"#### {plan['chapter_code']}.{index} {heading}", ""])
+        formal = formal_groups.get(section, [])
+        candidates = working_groups.get(section, [])
+        lines.extend(
+            [
+                "| 序号 | 依据名称 | 文号/标准号 | 使用状态 |",
+                "|---:|---|---|---|",
+            ]
+        )
+        sequence = 0
+        for item in formal:
+            sequence += 1
+            lines.append(_basis_table_row(sequence, item, candidate=False))
+        for item in candidates:
+            sequence += 1
+            lines.append(_basis_table_row(sequence, item, candidate=True))
+        if sequence == 0:
+            lines.append("| — | 【待补充：尚无与项目事实匹配且完成核验的依据】 | — | 待补充 |")
+        lines.append("")
+        quality = formal_quality.get(section, {})
+        candidate = candidate_quality.get(section, {})
+        if quality.get("gap"):
+            candidate_count = candidate.get("selection_capacity", candidate.get("candidate_count", 0))
+            lines.extend(
+                [
+                    (
+                        f"本类正式依据尚缺{quality['gap']}条；当前可复核候选容量为{candidate_count}条。"
+                        "候选完成官方来源、有效状态和适用条款核验后，方可转入正式清单。"
+                    ),
+                    "",
+                ]
+            )
+    return lines
+
+
+def basis_governance_section(
+    project: dict[str, Any], plan: dict[str, Any], policy_material: dict[str, Any]
+) -> list[str]:
+    del project
+    aspects = CHAPTER_ARGUMENT_OUTLINES[plan["chapter_code"]]
+    paragraphs = (
+        "政策和标准的正式采用以官方来源、现行有效状态、适用对象和核验条款为准；部门目录、参考报告和固定召回组只用于形成核验任务。",
+        "政策适用性由项目属地、机构类型、建设范围、验收目标和投资管理机制共同决定。地域性文件不得跨地区套用，专项政策不得在项目事实不满足适用条件时列入。",
+        "每项政策类依据应关联政策条款、建设范围和使用章节；行业、安全与投资依据应关联适用对象、版本和执行环节。无法建立对应关系的文件不进入正式清单。",
+        "报告报审、采购和验收前分别复核政策与标准版本。文件修订、替代或废止时，同步更新依据清单、政策背景、建设内容、验收口径和引用关系。",
+    )
+    lines = []
+    for index, (aspect, paragraph) in enumerate(zip(aspects, paragraphs), 1):
+        lines.extend([f"#### {plan['chapter_code']}.{index} {aspect}", "", paragraph, ""])
+    blockers = policy_material.get("quality", {}).get("delivery_blockers", [])
+    if blockers:
+        lines.extend(
+            [
+                "当前仍存在正式依据数量、属地政策或项目事实缺口，相关缺口关闭前不得形成无保留的正式采用结论。",
+                "",
+            ]
+        )
+    return lines
+
+
+def policy_background_section(
+    project: dict[str, Any],
+    plan: dict[str, Any],
+    policy_material: dict[str, Any],
+) -> list[str]:
+    headings = (
+        ("national", "国家政策背景"),
+        ("province", "省/自治区政策背景"),
+        ("prefecture", "市/项目建设地区政策背景"),
+    )
+    groups = policy_material.get("policy_background_groups", {})
+    candidates = policy_material.get("policy_background_candidate_groups", {})
+    quality = policy_material.get("quality", {}).get("formal_background", {})
+    lines = [
+        (
+            f"{project['official_name']}政策背景按照国家、省或自治区、市或项目建设地区三个层级展开。"
+            "本节政策顺序与前述政策类依据一致，且每段只改写已核验条款；仅有目录标题的文件不生成政策要求正文。"
+        ),
+        "",
+        _policy_material_marker(plan["chapter_code"], policy_material),
+        "",
+    ]
+    for index, (level, heading) in enumerate(headings, 1):
+        lines.extend([f"#### {plan['chapter_code']}.{index} {heading}", ""])
+        paragraphs = groups.get(level, [])
+        for item in paragraphs:
+            clause_ids = ",".join(str(value) for value in item.get("clause_ids", []))
+            lines.extend(
+                [
+                    (
+                        f'<!-- policy-background id="{item.get("policy_id", "")}" '
+                        f'clauses="{clause_ids}" text-hash="{item.get("text_hash", "")}" -->'
+                    ),
+                    item["text"],
+                    "",
+                ]
+            )
+        pending = candidates.get(level, [])
+        if pending:
+            lines.extend(
+                [
+                    "下列文件尚未取得可用于正文的核验条款，仅列为核验任务：",
+                    "",
+                    *[f"- {item['title']}" for item in pending],
+                    "",
+                ]
+            )
+        if not paragraphs and not pending:
+            lines.extend(["【待补充：本层级尚无与项目事实匹配的已核验政策条款】", ""])
+        if quality.get(level, {}).get("gap"):
+            lines.extend(
+                [
+                    f"本层级政策背景距质量下限尚缺{quality[level]['gap']}项已核验政策。",
+                    "",
+                ]
+            )
+    if not policy_material.get("working_policy_background_is_ordered_subsequence", True):
+        lines.extend(["【阻断：政策背景顺序与政策类依据不一致】", ""])
     return lines
 
 
@@ -1452,6 +1736,296 @@ def package_fact_sources(task_package: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def package_fact_bindings(task_package: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        source
+        for source in task_package.get("sources", [])
+        if source.get("source_type") == "fact"
+        and isinstance(source.get("data"), dict)
+        and not source["data"].get("missing")
+    ]
+
+
+def assessment_framework(fact_key: str, fact_content: str) -> str:
+    key = fact_key.casefold()
+    text = fact_content.casefold()
+    if not (
+        "acceptance" in key
+        or "assessment" in key
+        or re.search(r"(?:评级|评价|测评|参评|\d级|[一二三四五六七八九]级|四甲)", fact_content)
+    ):
+        return ""
+    for code, _label, aliases, _focus in ASSESSMENT_FRAMEWORKS:
+        if any(alias.casefold() in key or alias.casefold() in text for alias in aliases):
+            return code
+    return ""
+
+
+def assessment_fact_kind(fact_key: str) -> str:
+    key = fact_key.casefold()
+    if key.startswith("acceptance.") or ".target" in key or key.endswith(".target"):
+        return "target"
+    if "assessment" in key:
+        return "current"
+    return ""
+
+
+def current_state_dimension(fact_key: str, fact_content: str) -> str:
+    key = fact_key.casefold()
+    text = fact_content.casefold()
+    if "assessment" in key or assessment_framework(key, text):
+        return "assessment"
+    if "accreditation" in key or "创三甲" in fact_content or "三级甲等" in fact_content:
+        return "background"
+    rules = (
+        ("security", ("security", "安全", "权限", "审计", "密码", "灾备", "备份")),
+        ("operation", ("operation", "maintenance", "运维", "监控", "监测", "告警", "值守", "工单")),
+        ("infrastructure", ("infrastructure", "基础环境", "服务器", "存储", "网络", "机房", "云资源", "终端")),
+        ("data_interface", ("interface", "integration", "data", "接口", "集成", "数据", "主数据", "交换")),
+        ("application", ("application", "system", "应用", "系统", "his", "emr", "pacs", "lis")),
+    )
+    for dimension, tokens in rules:
+        if any(token in key or token in text for token in tokens):
+            return dimension
+    return "other"
+
+
+def fact_state_text(binding: dict[str, Any]) -> str:
+    fact = binding["data"]
+    content = str(fact.get("fact_content") or fact.get("normalized_value") or "").strip()
+    label = FACT_STATUS_LABELS.get(str(fact.get("fact_status") or ""), "【待确认】")
+    return f"{label}{content}" if content else f"{label}该事项尚无可用内容"
+
+
+def fact_trace_line(binding: dict[str, Any]) -> str:
+    fact_id = str(binding.get("source_object_id") or binding["data"].get("fact_id") or "")
+    if binding.get("usage_mode") in {"direct", "evidence"}:
+        return f"<!-- evidence: {fact_id} -->"
+    return f"<!-- unresolved-fact: {fact_id} -->"
+
+
+def assessment_boundary(
+    current_bindings: list[dict[str, Any]],
+    target_bindings: list[dict[str, Any]],
+    focus: str,
+) -> str:
+    usable_current = [
+        item
+        for item in current_bindings
+        if item.get("usage_mode") in {"direct", "evidence"}
+    ]
+    usable_targets = [
+        item
+        for item in target_bindings
+        if item.get("usage_mode") in {"direct", "evidence"}
+    ]
+    current_text = "；".join(fact_state_text(item) for item in usable_current)
+    if "未参评" in current_text or "未参与" in current_text:
+        return (
+            "未参评表示尚无正式外部评级结果，不等于零级，也不能据此认定医院不具备相应能力；"
+            f"后续应{focus}。"
+        )
+    if usable_current and usable_targets:
+        return (
+            "当前结果与规划目标之间形成对标提升任务，但等级差异本身只用于确定核查范围，"
+            f"不得直接推导具体功能缺口；后续应{focus}。"
+        )
+    if usable_targets:
+        return f"已登记规划目标，但当前评级或参评状态尚待补充；后续应{focus}。"
+    if usable_current:
+        return "已有当前评级或参评事实，规划目标仍以项目批复和建设单位确认口径为准。"
+    if current_bindings or target_bindings:
+        return f"当前评级或参评状态与规划目标尚不能作为确定性事实使用；后续应{focus}。"
+    return f"当前评级和规划目标均待补充；后续应{focus}。"
+
+
+def current_state_section(
+    project: dict[str, Any],
+    plan: dict[str, Any],
+    scopes: list[dict[str, Any]],
+    required_tables: list[str],
+    task_package: dict[str, Any],
+) -> list[str]:
+    del required_tables
+    bindings = package_fact_bindings(task_package)
+    assessment_groups: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: {"current": [], "target": []}
+    )
+    dimension_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    background_bindings: list[dict[str, Any]] = []
+    for binding in bindings:
+        fact = binding["data"]
+        key = str(fact.get("fact_key") or "")
+        content = str(fact.get("fact_content") or "")
+        framework = assessment_framework(key, content)
+        kind = assessment_fact_kind(key)
+        if framework and kind:
+            assessment_groups[framework][kind].append(binding)
+            continue
+        dimension = current_state_dimension(key, content)
+        if dimension == "background":
+            background_bindings.append(binding)
+        elif dimension != "assessment":
+            dimension_groups[dimension].append(binding)
+
+    configured_targets = [
+        str(item).strip()
+        for item in json_list(project.get("acceptance_targets_json"))
+        if str(item).strip()
+    ]
+    for target in configured_targets:
+        framework = assessment_framework("", target)
+        if framework and not assessment_groups[framework]["target"]:
+            assessment_groups[framework]["target"].append(
+                {
+                    "source_object_id": "PROJECT-CONFIG",
+                    "usage_mode": "prohibited",
+                    "data": {
+                        "fact_key": "project.acceptance_target_input",
+                        "fact_content": "项目输入已登记目标，具体等级须转为项目事实并确认",
+                        "fact_status": "pending_confirmation",
+                    },
+                }
+            )
+
+    lines = [
+        (
+            f"{plan['section_title']}以本章节任务包绑定的医院事实为依据，分别说明当前评级、参评状态、"
+            "规划目标和现场调研情况。评级标准与政策只用于解释核查框架，客户建设清单只用于确定调研对象；"
+            "二者均不能单独证明医院已经具备或缺少某项能力。"
+        ),
+        "",
+        f"#### {plan['chapter_code']}.1 资料边界与核实口径",
+        "",
+        (
+            "确定性现状只采用已确认或材料明确且已绑定来源的事实。待确认、待补充和冲突信息单独披露，"
+            "不通过行业惯例、目标等级或拟建系统名称补齐。现状分析先呈现事实，再说明其对后续对标调研的影响。"
+        ),
+        "",
+        f"#### {plan['chapter_code']}.2 评级基线与发展目标",
+        "",
+        "| 评价体系 | 当前评级或参评状态 | 规划目标 | 分析边界与后续核查 |",
+        "| --- | --- | --- | --- |",
+    ]
+    framework_rows = 0
+    for code, label, _aliases, focus in ASSESSMENT_FRAMEWORKS:
+        current = assessment_groups[code]["current"]
+        targets = assessment_groups[code]["target"]
+        if not current and not targets:
+            continue
+        for binding in [*current, *targets]:
+            if binding.get("source_object_id") != "PROJECT-CONFIG":
+                lines.append(fact_trace_line(binding))
+        current_text = "；".join(fact_state_text(item) for item in current) or "【待补充】当前评级或参评状态"
+        target_text = "；".join(fact_state_text(item) for item in targets) or "【待补充】规划目标"
+        lines.append(
+            f"| {label} | {current_text} | {target_text} | {assessment_boundary(current, targets, focus)} |"
+        )
+        framework_rows += 1
+    if not framework_rows:
+        lines.append(
+            "| 电子病历、互联互通、智慧服务及智慧管理等评价体系 | 【待补充】当前评级或参评状态 | 【待补充】规划目标 | 取得正式结果或医院确认后，再按项目采用的评价版本开展对标核查。 |"
+        )
+    lines.extend(
+        [
+            "",
+            (
+                "评级信息的转换路径为“当前评级或参评状态—目标等级—评价框架—现状核查问题”。"
+                "其中，当前评级和目标等级必须分别引用各自事实；等级差异只确定需要核查的评价维度和证据类型，"
+                "不能自动生成系统缺失、功能缺失或能力未达标等结论。具体问题只能由访谈、系统台账、现场验证、"
+                "接口与数据记录、安全材料和运维证据共同支持。"
+            ),
+            "",
+        ]
+    )
+
+    if background_bindings:
+        lines.extend([f"#### {plan['chapter_code']}.3 医院发展背景与分析边界", ""])
+        for binding in background_bindings:
+            lines.extend([fact_trace_line(binding), fact_state_text(binding), ""])
+        lines.extend(
+            [
+                (
+                    "创三甲、医院发展规划等背景可用于确定医疗质量、患者服务、运营管理和数据取证等调研重点，"
+                    "但不能直接证明某个系统缺失、某项评级能力未达到或某个项目必须纳入本期范围。"
+                ),
+                "",
+            ]
+        )
+
+    heading_index = 4 if background_bindings else 3
+    for dimension, title, required_information in CURRENT_STATE_DIMENSIONS:
+        lines.extend(
+            [
+                f"#### {plan['chapter_code']}.{heading_index} {title}",
+                f"<!-- current-state-dimension: {dimension} -->",
+                "",
+            ]
+        )
+        facts = dimension_groups.get(dimension, [])
+        if facts:
+            for binding in facts:
+                lines.extend([fact_trace_line(binding), fact_state_text(binding), ""])
+        else:
+            lines.extend([f"【待补充：{required_information}】", ""])
+        direct_facts = [
+            binding
+            for binding in facts
+            if binding.get("usage_mode") in {"direct", "evidence"}
+        ]
+        fact_boundary = (
+            "本维度已有可直接引用的事实，现状结论以以上事实所明确的对象、时点和状态为限。"
+            if direct_facts
+            else "本维度尚无可直接引用的确定性事实，以上未决信息只作为补证线索。"
+        )
+        lines.extend(
+            [
+                fact_boundary + CURRENT_STATE_ANALYSIS_GUIDANCE[dimension],
+                "",
+            ]
+        )
+        heading_index += 1
+
+    other_facts = dimension_groups.get("other", [])
+    if other_facts:
+        lines.extend([f"#### {plan['chapter_code']}.{heading_index} 其他已知信息化现状", ""])
+        for binding in other_facts:
+            lines.extend([fact_trace_line(binding), fact_state_text(binding), ""])
+        heading_index += 1
+
+    lines.extend([f"#### {plan['chapter_code']}.{heading_index} 拟建清单对应的现状核查线索", ""])
+    if scopes:
+        lines.extend(
+            [
+                "| 拟建或改造对象 | 清单口径 | 现状核查要求 |",
+                "| --- | --- | --- |",
+            ]
+        )
+        for scope in scopes[:20]:
+            mode = MODE_LABELS.get(str(scope.get("construction_mode") or ""), "待确认")
+            lines.append(
+                f"| {scope.get('standard_name') or '未命名范围项'} | 清单列明{mode} | "
+                "仅作为现状核查线索；需另行核实现有系统、版本、使用范围、接口、数据和运维情况。 |"
+            )
+    else:
+        lines.append("当前没有可用的客户建设清单，本节不据此推测现有系统。")
+    lines.extend(["", f"#### {plan['chapter_code']}.{heading_index + 1} 待核实事项", ""])
+    unresolved = [
+        binding
+        for binding in bindings
+        if binding.get("usage_mode") not in {"direct", "evidence"}
+        and binding.get("source_object_id") != "PROJECT-CONFIG"
+    ]
+    if unresolved:
+        for binding in unresolved:
+            lines.extend([fact_trace_line(binding), fact_state_text(binding), ""])
+    else:
+        lines.append(
+            "当前任务包没有未决事实标记；仍需按应用、数据接口、基础环境、安全和运维五个维度复核资料时点、对象范围和证据位置。"
+        )
+    return lines
+
+
 def project_variable_values(
     project: dict[str, Any], task_package: dict[str, Any]
 ) -> dict[str, str]:
@@ -1641,6 +2215,10 @@ def generic_section(
 ) -> list[str]:
     task_package = task_package or {}
     contract = task_package.get("generation_contract") or {}
+    if contract.get("assembly_mode") == "current_state_evidence_synthesis":
+        return current_state_section(
+            project, plan, scopes, required_tables, task_package
+        )
     if contract.get("assembly_mode") == "derived_objective_scope_summary":
         return objective_scope_summary_section(
             project, plan, scopes, required_tables, task_package
@@ -1732,6 +2310,8 @@ def ensure_minimum_length(
             lines.extend([paragraph, ""])
             if visible_length("\n".join(lines)) >= target_length:
                 break
+        return lines
+    if plan.get("section_role") == "current_state":
         return lines
     scope_names = list(
         dict.fromkeys(
@@ -1947,7 +2527,9 @@ def build_initial_drafts(
             nodes_by_plan[row["plan_id"]].append(item)
     policy_material = (
         build_policy_material(database, project_code, mode="working")
-        if any(plan["section_role"] == "basis" for plan in plans)
+        if any(
+            plan["section_role"] in {"basis", "policy_background"} for plan in plans
+        )
         else {}
     )
     results = []
@@ -1966,11 +2548,14 @@ def build_initial_drafts(
             )
         elif plan["section_role"] == "basis":
             lines = policy_section(project, plan, policy_material, required_tables)
+        elif plan["section_role"] == "policy_background":
+            lines = policy_background_section(project, plan, policy_material)
         else:
             lines = generic_section(
                 project, plan, scopes, required_tables, package
             )
-        lines = ensure_minimum_length(lines, project, plan, scopes)
+        if plan["section_role"] not in {"basis", "policy_background"}:
+            lines = ensure_minimum_length(lines, project, plan, scopes)
         content = "\n".join(lines).rstrip() + "\n"
         draft_path = output_dir / f"CH{plan['chapter_code']}-{safe_title(plan['section_title'])}.md"
         draft_path.write_text(content, encoding="utf-8")

@@ -51,6 +51,22 @@ class SectionCompositionPlanTests(unittest.TestCase):
                             "fact_status": "pending_confirmation",
                             "materiality": "A",
                         },
+                        {
+                            "fact_id": "FACT-CURRENT-EMR",
+                            "fact_key": "current_state.assessment.emr.level",
+                            "fact_category": "current_state",
+                            "fact_content": "电子病历系统应用水平已通过四级评价。",
+                            "fact_status": "confirmed",
+                            "materiality": "B",
+                        },
+                        {
+                            "fact_id": "FACT-UNRELATED-ORGANIZATION",
+                            "fact_key": "organization.department_count",
+                            "fact_category": "organization",
+                            "fact_content": "组织机构情况另见建设单位概况。",
+                            "fact_status": "confirmed",
+                            "materiality": "B",
+                        },
                     ],
                 },
             )
@@ -86,6 +102,12 @@ class SectionCompositionPlanTests(unittest.TestCase):
             self.assertIn("fact:acceptance", overview["missing_source_types"])
             self.assertIn("scope", overview["missing_source_types"])
 
+            current_state = next(
+                plan for plan in first["plans"] if plan["chapter_code"] == "2.1.2"
+            )
+            self.assertNotIn("fact:organization", current_state["missing_source_types"])
+            self.assertNotIn("fact:business", current_state["missing_source_types"])
+
             conn = sqlite3.connect(database)
             try:
                 plan_sources = conn.execute(
@@ -100,6 +122,23 @@ class SectionCompositionPlanTests(unittest.TestCase):
                 self.assertIn(
                     ("scope", scope_result["items"][0]["scope_id"], "parameterized"),
                     plan_sources,
+                )
+                current_state_sources = conn.execute(
+                    """
+                    SELECT source_type,source_object_id,usage_mode
+                    FROM section_plan_source WHERE plan_id=?
+                    """,
+                    (current_state["plan_id"],),
+                ).fetchall()
+                self.assertIn(
+                    ("fact", "FACT-CURRENT-EMR", "direct"), current_state_sources
+                )
+                self.assertIn(
+                    ("fact", "FACT-ACCEPTANCE", "prohibited"), current_state_sources
+                )
+                self.assertNotIn(
+                    ("fact", "FACT-UNRELATED-ORGANIZATION", "direct"),
+                    current_state_sources,
                 )
             finally:
                 conn.close()

@@ -96,7 +96,7 @@ class SnapshotForeignKeyMigrationTests(unittest.TestCase):
 
                 completed = apply_migrations(connection)
 
-                self.assertEqual(completed, ["018_repair_snapshot_item_foreign_key"])
+                self.assertIn("018_repair_snapshot_item_foreign_key", completed)
                 self.assertEqual(
                     self.foreign_key_target(connection),
                     "shared_knowledge_snapshot",

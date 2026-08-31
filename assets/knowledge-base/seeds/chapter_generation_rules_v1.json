@@ -27,14 +27,37 @@
       "required_source_types": ["fact", "scope"]
     },
     "basis": {
-      "argument_outline": ["国家政策法规", "行业标准与评价规范", "政策条款与本项目关系", "适用性及有效性边界"],
-      "assembly_mode": "verified_policy_material",
-      "required_source_types": ["policy"]
+      "argument_outline": ["政策类依据", "行业标准依据", "安全类标准依据", "投资估算编制依据"],
+      "assembly_mode": "four_group_verified_basis",
+      "required_source_types": ["fact", "policy", "reference"],
+      "validation": {
+        "require_policy_basis_minimum": 16,
+        "require_industry_standard_minimum": 20,
+        "require_security_standard_minimum": 16,
+        "require_investment_basis_minimum": 5
+      }
+    },
+    "policy_background": {
+      "argument_outline": ["国家政策背景", "省/自治区政策背景", "市/项目建设地区政策背景"],
+      "assembly_mode": "jurisdiction_policy_background",
+      "required_source_types": ["fact", "policy", "reference"],
+      "validation": {
+        "require_verified_clause_for_prose": true,
+        "require_ordered_policy_basis_subsequence": true,
+        "require_national_background_minimum": 8,
+        "require_province_background_minimum": 2,
+        "require_prefecture_background_minimum": 1
+      }
     },
     "current_state": {
-      "argument_outline": ["资料边界与核实口径", "业务运行现状", "应用系统现状", "数据接口与基础环境", "待核实事项"],
+      "argument_outline": ["资料边界与核实口径", "评级基线与发展目标", "业务运行现状", "应用系统现状", "数据与接口现状", "基础环境现状", "安全现状", "运维现状", "待核实事项"],
       "assembly_mode": "fact_argument",
-      "required_source_types": ["fact"]
+      "required_source_types": ["fact"],
+      "completion_checks": [
+        "评级目标、当前评级、参评状态和调研事实分别绑定",
+        "未参评不换算为零级，评级差异不直接推导具体能力缺口",
+        "拟建清单只作为调研线索，不作为医院现状证据"
+      ]
     },
     "problem_need": {
       "argument_outline": ["证据支持的问题表现", "成因与影响链", "建设需求响应", "范围承载与优先关系"],
@@ -95,10 +118,25 @@
       "canonical_semantic_sections": ["overall_objective_scope"],
       "regression_group": "hospital_objective"
     },
-    "1.2.1": {"argument_outline": ["政策筛选与采用原则", "政策法规依据清单", "适用条款与建设承接", "效力复核与动态更新"]},
-    "1.2.2": {"argument_outline": ["标准筛选与采用原则", "标准规范依据清单", "适用条款与建设承接", "执行取证与版本更新"]},
-    "2.1.1": {"argument_outline": ["资料边界与核实口径", "业务运行现状", "待核实事项"], "semantic_sections": ["project_background"], "content_slots": ["baseline", "current_state"]},
-    "2.1.2": {"argument_outline": ["资料边界与核实口径", "应用系统现状", "数据接口与基础环境", "待核实事项"], "semantic_sections": ["project_background"], "content_slots": ["current_state", "assessment_target_baseline"]},
+    "1.2.1": {"argument_outline": ["政策类依据", "行业标准依据", "安全类标准依据", "投资估算编制依据"], "assembly_mode": "four_group_verified_basis", "regression_group": "policy_evidence"},
+    "1.2.2": {"argument_outline": ["来源与有效性复核", "项目适用性边界", "条款与建设内容映射", "版本更新机制"], "assembly_mode": "basis_governance", "regression_group": "policy_evidence"},
+    "2.1.1": {"section_role": "policy_background", "argument_outline": ["国家政策背景", "省/自治区政策背景", "市/项目建设地区政策背景"], "assembly_mode": "jurisdiction_policy_background", "required_fact_categories": ["project", "organization"], "regression_group": "policy_evidence"},
+    "2.1.2": {
+      "argument_outline": ["资料边界与核实口径", "评级基线与发展目标", "应用系统现状", "数据与接口现状", "基础环境现状", "安全现状", "运维现状", "待核实事项"],
+      "assembly_mode": "current_state_evidence_synthesis",
+      "required_fact_categories": ["current_state"],
+      "optional_fact_categories": ["acceptance", "assessment", "business.accreditation", "project.accreditation"],
+      "semantic_sections": ["project_background"],
+      "content_slots": ["current_state", "assessment_target_baseline"],
+      "validation": {
+        "require_current_state_fact_traceability": true,
+        "require_current_state_dimensions": true,
+        "require_unresolved_fact_disclosure": true,
+        "forbid_scope_as_current_state": true,
+        "enforce_assessment_state_separation": true
+      },
+      "regression_group": "current_state"
+    },
     "2.2.1": {"argument_outline": ["证据支持的问题表现", "成因与影响链", "范围承载与优先关系"], "semantic_sections": ["project_background"], "content_slots": ["problem"]},
     "2.2.2": {"argument_outline": ["建设需求响应", "范围承载与优先关系", "验收与决策边界"], "semantic_sections": ["requirements_analysis"]},
     "3.1.1": {"argument_outline": ["政策必要性", "业务必要性", "实施条件与约束"], "semantic_sections": ["necessity_feasibility"], "content_slot_prefixes": ["necessity_"]},
@@ -140,6 +178,33 @@
     "10.1.1": {"argument_outline": ["研究判断", "推进条件", "待确认前置事项", "后续工作建议"]}
   },
   "regression_groups": {
+    "current_state": {
+      "chapters": ["2.1.2"],
+      "chapter_tests": {
+        "2.1.2": ["tests.test_current_state_chapter"]
+      },
+      "family_tests": [
+        "tests.test_current_state_chapter",
+        "tests.test_section_composition_plan",
+        "tests.test_section_task_packages",
+        "tests.test_evidence_bound_draft_quality"
+      ]
+    },
+    "policy_evidence": {
+      "chapters": ["1.2.1", "2.1.1"],
+      "chapter_tests": {
+        "1.2.1": ["tests.test_policy_section_material", "tests.test_evidence_bound_draft_quality"],
+        "2.1.1": ["tests.test_policy_section_material", "tests.test_evidence_bound_draft_quality"]
+      },
+      "family_tests": [
+        "tests.test_policy_basis_profile",
+        "tests.test_policy_catalog_local",
+        "tests.test_policy_section_material",
+        "tests.test_section_composition_plan",
+        "tests.test_section_task_packages",
+        "tests.test_evidence_bound_draft_quality"
+      ]
+    },
     "hospital_objective": {
       "chapters": ["1.1.2", "4.1.2"],
       "chapter_tests": {

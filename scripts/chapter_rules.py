@@ -78,6 +78,15 @@ def resolve_chapter_rule(
                 *chapter_rule.get("required_source_types", []),
             ]
         ),
+        "required_fact_categories": _unique(
+            chapter_rule.get("required_fact_categories", [])
+        ),
+        "optional_fact_categories": _unique(
+            [
+                *role_rule.get("optional_fact_categories", []),
+                *chapter_rule.get("optional_fact_categories", []),
+            ]
+        ),
         "semantic_sections": _unique(
             [
                 *role_rule.get("semantic_sections", []),

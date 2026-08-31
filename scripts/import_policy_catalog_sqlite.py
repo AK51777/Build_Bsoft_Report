@@ -65,10 +65,11 @@ def import_catalog(database: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 INSERT INTO policy_catalog_entry (
                   catalog_entry_id,catalog_id,source_row,source_index_no,index_occurrence,index_conflict,identity_key,
                   catalog_group_code,catalog_group_name,authority_level_label,
+                  jurisdiction_level,jurisdiction_code,jurisdiction_name,
                   category_name,keyword_text,keyword_tags_json,document_no,title,
                   publish_date,publish_date_raw,issuer,file_count,notes,external_url,
                   verification_status,entry_status,row_hash
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(catalog_entry_id) DO UPDATE SET
                   source_row=excluded.source_row,source_index_no=excluded.source_index_no,
                   index_occurrence=excluded.index_occurrence,
@@ -76,6 +77,9 @@ def import_catalog(database: Path, payload: dict[str, Any]) -> dict[str, Any]:
                   catalog_group_code=excluded.catalog_group_code,
                   catalog_group_name=excluded.catalog_group_name,
                   authority_level_label=excluded.authority_level_label,
+                  jurisdiction_level=excluded.jurisdiction_level,
+                  jurisdiction_code=excluded.jurisdiction_code,
+                  jurisdiction_name=excluded.jurisdiction_name,
                   category_name=excluded.category_name,
                   keyword_text=excluded.keyword_text,
                   keyword_tags_json=excluded.keyword_tags_json,
@@ -96,6 +100,9 @@ def import_catalog(database: Path, payload: dict[str, Any]) -> dict[str, Any]:
                     record.get("catalog_group_code", ""),
                     record.get("catalog_group_name", ""),
                     record.get("authority_level_label", ""),
+                    record["jurisdiction_level"],
+                    record["jurisdiction_code"],
+                    record["jurisdiction_name"],
                     record.get("category_name", ""),
                     record.get("keyword_text", ""),
                     dump_json(record.get("keyword_tags", [])),

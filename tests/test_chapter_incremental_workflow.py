@@ -69,6 +69,46 @@ class ChapterRuleLayerTests(unittest.TestCase):
         self.assertIn("tests.test_chapter_incremental_workflow", chapter)
         self.assertGreater(len(family), len(chapter))
 
+    def test_current_state_contract_separates_required_and_optional_facts(self) -> None:
+        contract = resolve_chapter_rule("2.1.2", "current_state")
+        self.assertEqual(contract["assembly_mode"], "current_state_evidence_synthesis")
+        self.assertEqual(contract["required_fact_categories"], ["current_state"])
+        self.assertIn("acceptance", contract["optional_fact_categories"])
+        self.assertIn("business.accreditation", contract["optional_fact_categories"])
+        self.assertTrue(
+            contract["validation"]["require_current_state_fact_traceability"]
+        )
+        self.assertIn(
+            "tests.test_current_state_chapter",
+            regression_targets("2.1.2", "chapter"),
+        )
+
+    def test_policy_evidence_contract_has_four_basis_groups_and_three_background_levels(self) -> None:
+        basis = resolve_chapter_rule("1.2.1", "basis")
+        background = resolve_chapter_rule("2.1.1", "policy_background")
+        self.assertEqual(basis["assembly_mode"], "four_group_verified_basis")
+        self.assertEqual(
+            basis["argument_outline"],
+            ["政策类依据", "行业标准依据", "安全类标准依据", "投资估算编制依据"],
+        )
+        self.assertEqual(background["assembly_mode"], "jurisdiction_policy_background")
+        self.assertEqual(
+            background["argument_outline"],
+            ["国家政策背景", "省/自治区政策背景", "市/项目建设地区政策背景"],
+        )
+        self.assertTrue(
+            background["validation"]["require_ordered_policy_basis_subsequence"]
+        )
+        blueprint = json.loads(
+            (SKILL_ROOT / "assets" / "knowledge-base" / "seeds" / "section_blueprints_v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        outline = {row["chapter_code"]: row for row in blueprint["outline"]}
+        self.assertEqual(outline["1.2.1"]["section_title"], "可行性研究报告编制依据")
+        self.assertEqual(outline["1.2.2"]["section_title"], "编制依据适用与动态更新")
+        self.assertEqual(outline["2.1.1"]["section_role"], "policy_background")
+
 
 class SingleChapterPipelineTests(unittest.TestCase):
     def test_plan_package_and_draft_can_be_built_for_one_chapter(self) -> None:

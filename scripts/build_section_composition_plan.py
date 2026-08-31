@@ -12,6 +12,7 @@ from typing import Any
 from build_dynamic_construction_outline import build_outline_nodes
 from chapter_rules import resolve_chapter_rule
 from knowledge_db import apply_migrations, connect, dump_json, load_json, now_iso, stable_id
+from match_policy_catalog_candidates import section_from_storage
 
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
@@ -353,15 +354,24 @@ def build_composition_plan(
                 "SECTIONPLAN", project["project_id"], chapter_code, version_no
             )
             required_questions = json.loads(blueprint["required_questions_json"])
-            required_fact_categories = json.loads(
-                blueprint["required_fact_categories_json"]
+            required_fact_categories = (
+                generation_contract.get("required_fact_categories")
+                or json.loads(blueprint["required_fact_categories_json"])
+            )
+            optional_fact_categories = generation_contract.get(
+                "optional_fact_categories", []
             )
             required_scope_types = json.loads(blueprint["required_scope_types_json"])
             required_policy_topics = json.loads(
                 blueprint["required_policy_topics_json"]
             )
             matched_facts = [
-                fact for fact in facts if fact_matches(fact["fact_key"], required_fact_categories)
+                fact
+                for fact in facts
+                if fact_matches(
+                    fact["fact_key"],
+                    [*required_fact_categories, *optional_fact_categories],
+                )
             ]
             matched_scopes = [
                 scope
@@ -554,10 +564,15 @@ def build_composition_plan(
                         ),
                     )
                 )
-            if chapter_code in {"1.2.1", "1.2.2"}:
-                expected_group = "policy" if chapter_code == "1.2.1" else "standard"
+            if chapter_code in {"1.2.1", "1.2.2"} or role == "policy_background":
                 for candidate in catalog_candidates:
-                    if candidate["basis_group"] != expected_group:
+                    basis_section = section_from_storage(
+                        candidate["basis_group"], candidate["suggested_use"]
+                    )
+                    if role == "policy_background" and not (
+                        basis_section == "policy_basis"
+                        and candidate["suggested_use"] == "background"
+                    ):
                         continue
                     sources.append(
                         (
@@ -566,6 +581,7 @@ def build_composition_plan(
                             "structure_only",
                             (
                                 "department_policy_catalog_candidate; unverified_title_only; "
+                                f"basis_section={basis_section}; "
                                 f"suggested_use={candidate['suggested_use']}; "
                                 f"decision_status={candidate['decision_status']}"
                             ),

@@ -9,14 +9,20 @@ from pathlib import Path
 from typing import Any
 
 from knowledge_db import apply_migrations, connect, dump_json, now_iso, stable_id
+from match_policy_catalog_candidates import load_basis_profile, load_project_policy_context
 
 
 JURISDICTION_RANK = {"national": 10, "province": 20, "prefecture": 30, "county": 40, "other": 90}
 BACKGROUND_POLICY_TYPES = {"law", "regulation", "plan", "opinion", "guidance", "policy"}
-MATCHER_VERSION = "p1-rules-20260804"
+MATCHER_VERSION = "p1-rules-20260828-v2"
 
 
-def _jurisdiction_applies(project_code: str, level: str, policy_code: str) -> bool:
+def permits_section(value: str | list[str] | None, *aliases: str) -> bool:
+    permitted = set(value if isinstance(value, list) else json.loads(value or "[]"))
+    return bool(permitted.intersection(aliases))
+
+
+def jurisdiction_applies(project_code: str, level: str, policy_code: str) -> bool:
     if level == "national":
         return True
     if not project_code or not policy_code:
@@ -44,15 +50,52 @@ def _sort_key(row: dict[str, Any]) -> str:
     )
 
 
+def policy_match_input_signature(connection: Any, project: Any, topics: set[str]) -> str:
+    profile = load_basis_profile(str(project["project_type"]))
+    context = load_project_policy_context(connection, project, profile)
+    policy_corpus = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT p.policy_id,p.source_hash,p.validity_status,p.verification_status,
+                   p.jurisdiction_level,p.jurisdiction_code,
+                   c.clause_id,c.text_hash,c.normalized_summary,c.topic_tags_json,
+                   c.permitted_sections_json,c.forbidden_claims_json,
+                   c.verification_status AS clause_verification_status
+            FROM policy_document p
+            JOIN policy_clause c ON c.policy_id=p.policy_id
+            ORDER BY p.policy_id,c.clause_id
+            """
+        )
+    ]
+    return stable_id(
+        "POLICYMATCHINPUT",
+        dump_json(
+            {
+                "matcher_version": MATCHER_VERSION,
+                "basis_profile_version": profile["profile_version"],
+                "project_type": context["project_type"],
+                "jurisdiction": context["jurisdiction"],
+                "fact_bindings": context["fact_bindings"],
+                "scope_topics": context["scope_topics"],
+                "scope_bindings": context["scope_bindings"],
+                "topics": sorted(topics),
+                "policy_corpus": policy_corpus,
+            }
+        ),
+    )
+
+
 def match(database: Path, project_code: str, topics: set[str], output_json: Path | None, output_md: Path | None) -> dict:
     with connect(database) as conn:
         apply_migrations(conn)
         project = conn.execute("SELECT * FROM project WHERE project_code=?", (project_code,)).fetchone()
         if not project:
             raise SystemExit(f"未找到项目：{project_code}")
+        match_input_signature = policy_match_input_signature(conn, project, topics)
         run_started_at = now_iso()
         match_run_id = stable_id(
-            "PMRUN", project["project_id"], MATCHER_VERSION, ",".join(sorted(topics)), run_started_at
+            "PMRUN", project["project_id"], match_input_signature, run_started_at
         )
         conn.execute(
             """
@@ -87,7 +130,7 @@ def match(database: Path, project_code: str, topics: set[str], output_json: Path
 
         candidates: list[dict[str, Any]] = []
         for row in rows:
-            if not _jurisdiction_applies(
+            if not jurisdiction_applies(
                 project["jurisdiction_code"], row["jurisdiction_level"], row["jurisdiction_code"]
             ):
                 continue
@@ -97,11 +140,23 @@ def match(database: Path, project_code: str, topics: set[str], output_json: Path
                 continue
             verified = row["verification_status"] == "verified" and row["clause_verification_status"] == "verified"
             current = row["validity_status"] == "current"
+            basis_permitted = permits_section(row["permitted_sections_json"], "basis", "1.2.1")
+            background_permitted = permits_section(
+                row["permitted_sections_json"], "policy_background", "2.1.1"
+            )
+            has_safe_summary = bool(str(row.get("normalized_summary") or "").strip())
             core_topic = bool({"electronic_medical_record", "interoperability"}.intersection(overlap))
             relevance = "core" if core_topic else ("important" if len(overlap) >= 2 else "supplementary")
-            basis_use = int(verified and current and relevance in {"core", "important", "supplementary"})
+            basis_use = int(
+                verified
+                and current
+                and basis_permitted
+                and relevance in {"core", "important", "supplementary"}
+            )
             background_use = int(
                 basis_use
+                and background_permitted
+                and has_safe_summary
                 and (
                     row["policy_type"] in BACKGROUND_POLICY_TYPES
                     or core_topic
@@ -115,6 +170,13 @@ def match(database: Path, project_code: str, topics: set[str], output_json: Path
             )
             match_id = stable_id("PMATCH", match_run_id, row["policy_id"], row["clause_id"])
             decision_status = "ai_recommended" if basis_use else "needs_confirmation"
+            limitations = []
+            if not basis_permitted:
+                limitations.append("clause_not_permitted_for_basis")
+            if not background_permitted:
+                limitations.append("clause_not_permitted_for_policy_background")
+            if not has_safe_summary:
+                limitations.append("normalized_summary_missing")
             timestamp = now_iso()
             conn.execute(
                 """
@@ -151,7 +213,8 @@ def match(database: Path, project_code: str, topics: set[str], output_json: Path
                     sort_key,
                     None,
                     decision_status,
-                    "基于地域、项目类型、建设主题和官方核验状态确定性匹配。",
+                    "基于地域、项目类型、建设主题、章节许可和官方核验状态确定性匹配。"
+                    + (" 限制：" + ",".join(limitations) if limitations else ""),
                     timestamp,
                     timestamp,
                 ),
@@ -167,6 +230,7 @@ def match(database: Path, project_code: str, topics: set[str], output_json: Path
                     "project_relation": project_relation,
                     "sort_key": sort_key,
                     "decision_status": decision_status,
+                    "limitations": limitations,
                 }
             )
 
@@ -227,6 +291,7 @@ def match(database: Path, project_code: str, topics: set[str], output_json: Path
                         "policy_count": len({row["policy_id"] for row in candidates}),
                         "clause_match_count": len(candidates),
                         "basis_policy_order": ordered_policy_ids,
+                        "match_input_signature": match_input_signature,
                     }
                 ),
                 match_run_id,
@@ -240,6 +305,7 @@ def match(database: Path, project_code: str, topics: set[str], output_json: Path
         "topics": sorted(topics),
         "match_run_id": match_run_id,
         "matcher_version": MATCHER_VERSION,
+        "match_input_signature": match_input_signature,
         "policy_count": len({row["policy_id"] for row in candidates}),
         "clause_match_count": len(candidates),
         "basis_policy_order": ordered_policy_ids,

@@ -18,8 +18,9 @@ from import_policy_catalog_sqlite import import_catalog  # noqa: E402
 from ingest_policies import ingest as ingest_policies  # noqa: E402
 from init_project_workbench import initialize_project  # noqa: E402
 from knowledge_db import connect  # noqa: E402
-from match_policy_catalog_candidates import match_candidates  # noqa: E402
+from match_policy_catalog_candidates import match_candidates, select_project_catalog  # noqa: E402
 from match_project_policies import match as match_project_policies  # noqa: E402
+from sync_postgres_knowledge_snapshot import record_snapshot  # noqa: E402
 
 
 def catalog_payload() -> dict:
@@ -71,6 +72,48 @@ def catalog_payload() -> dict:
 
 
 class PolicyCatalogLocalTests(unittest.TestCase):
+    def test_project_snapshot_selects_catalog_instead_of_global_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            initialized = initialize_project(
+                Path(tmp) / "project", project_code="POLICY-CATALOG-SNAPSHOT"
+            )
+            database = Path(initialized["database"])
+            first = catalog_payload()
+            second = json.loads(json.dumps(first, ensure_ascii=False))
+            second["catalog_id"] = "POLICYCATALOG-OTHER-SCOPE"
+            second["catalog_scope"] = "other_policy_scope"
+            second["content_hash"] = "c" * 64
+            for index, record in enumerate(second["records"], 1):
+                record["catalog_entry_id"] = f"POLICYCATENTRY-OTHER-{index}"
+                record["row_hash"] = f"other-row-hash-{index}"
+            import_catalog(database, first)
+            import_catalog(database, second)
+            record_snapshot(
+                database,
+                "POLICY-CATALOG-SNAPSHOT",
+                source_type="policy_catalog",
+                source_id=first["catalog_id"],
+                content_hash=first["content_hash"],
+                server_schema="medical_report_kb",
+                items=[
+                    (
+                        "policy_catalog_entry",
+                        record["catalog_entry_id"],
+                        record["row_hash"],
+                        record,
+                    )
+                    for record in first["records"]
+                ],
+                metadata={"records": len(first["records"])},
+            )
+            with connect(database) as connection:
+                project = connection.execute(
+                    "SELECT * FROM project WHERE project_code='POLICY-CATALOG-SNAPSHOT'"
+                ).fetchone()
+                selected, source = select_project_catalog(connection, project)
+            self.assertEqual(selected["catalog_id"], first["catalog_id"])
+            self.assertEqual(source, "project_snapshot")
+
     def test_duplicate_source_indexes_are_preserved_and_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             initialized = initialize_project(
@@ -120,10 +163,17 @@ class PolicyCatalogLocalTests(unittest.TestCase):
             import_catalog(database, payload)
             with connect(database) as connection:
                 status = connection.execute(
-                    "SELECT verification_status FROM policy_catalog_entry WHERE catalog_entry_id=?",
+                    """
+                    SELECT verification_status,jurisdiction_level,jurisdiction_code,jurisdiction_name
+                    FROM policy_catalog_entry WHERE catalog_entry_id=?
+                    """,
                     (payload["records"][0]["catalog_entry_id"],),
-                ).fetchone()[0]
-            self.assertEqual(status, "partially_verified")
+                ).fetchone()
+            self.assertEqual(status["verification_status"], "partially_verified")
+            self.assertEqual(
+                (status["jurisdiction_level"], status["jurisdiction_code"], status["jurisdiction_name"]),
+                ("national", "100000", "全国"),
+            )
 
             topics = {"hospital_informationization", "electronic_medical_record"}
             first_match = match_candidates(database, "POLICY-CATALOG-001", topics=topics)
@@ -197,6 +247,50 @@ class PolicyCatalogLocalTests(unittest.TestCase):
             second = match_candidates(database, "POLICY-CATALOG-DECISION")
             self.assertEqual(second["catalog_match_run_id"], first["catalog_match_run_id"])
             self.assertEqual(second["candidate_count"], first["candidate_count"] - 1)
+
+    def test_jurisdiction_change_creates_new_run_without_old_local_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            initialized = initialize_project(
+                Path(tmp) / "project",
+                project_code="POLICY-CATALOG-JURISDICTION-CHANGE",
+                jurisdiction_code="540400",
+                jurisdiction_name="林芝市",
+            )
+            database = Path(initialized["database"])
+            payload = catalog_payload()
+            payload["records"][0].update(
+                {
+                    "jurisdiction_level": "province",
+                    "jurisdiction_code": "540000",
+                    "jurisdiction_name": "西藏自治区",
+                }
+            )
+            payload["records"][1].update(
+                {
+                    "jurisdiction_level": "province",
+                    "jurisdiction_code": "510000",
+                    "jurisdiction_name": "四川省",
+                }
+            )
+            import_catalog(database, payload)
+
+            first = match_candidates(database, "POLICY-CATALOG-JURISDICTION-CHANGE")
+            first_titles = {item["title"] for item in first["candidates"]}
+            self.assertIn(payload["records"][0]["title"], first_titles)
+            self.assertNotIn(payload["records"][1]["title"], first_titles)
+
+            with connect(database) as connection:
+                connection.execute(
+                    "UPDATE project SET jurisdiction_code='510100',jurisdiction_name='成都市'"
+                )
+                connection.commit()
+
+            second = match_candidates(database, "POLICY-CATALOG-JURISDICTION-CHANGE")
+            second_titles = {item["title"] for item in second["candidates"]}
+            self.assertNotEqual(first["catalog_match_run_id"], second["catalog_match_run_id"])
+            self.assertNotEqual(first["match_input_signature"], second["match_input_signature"])
+            self.assertIn(payload["records"][1]["title"], second_titles)
+            self.assertNotIn(payload["records"][0]["title"], second_titles)
 
 
 if __name__ == "__main__":

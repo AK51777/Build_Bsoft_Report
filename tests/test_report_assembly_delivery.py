@@ -17,7 +17,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from assemble_report_markdown import assemble  # noqa: E402
 from audit_delivery_artifact import audit as audit_delivery_artifact  # noqa: E402
-from build_report_docx import build_docx  # noqa: E402
+from build_report_docx import build_docx, verify_policy_validation_freshness  # noqa: E402
 from build_section_composition_plan import build_composition_plan  # noqa: E402
 from export_section_task_packages import export_packages  # noqa: E402
 from init_project_workbench import initialize_project  # noqa: E402
@@ -54,6 +54,43 @@ BLUEPRINTS = {
 
 
 class ReportAssemblyDeliveryTests(unittest.TestCase):
+    def test_delivery_authorization_rejects_stale_policy_material_signature(self) -> None:
+        summary = {
+            "policy_match_run_id": "RUN-OLD",
+            "policy_material_signature": "a" * 64,
+        }
+        current = {
+            "match_run_id": "RUN-NEW",
+            "material_signature": "b" * 64,
+            "delivery_eligible": True,
+            "quality": {"delivery_blockers": []},
+        }
+        with self.assertRaisesRegex(RuntimeError, "policy validation is stale"):
+            verify_policy_validation_freshness(
+                summary, current, has_policy_chapters=True
+            )
+        verify_policy_validation_freshness(
+            summary, current, has_policy_chapters=False
+        )
+
+    def test_delivery_authorization_rejects_ineligible_policy_material_even_if_signature_matches(self) -> None:
+        summary = {
+            "policy_match_run_id": "RUN-1",
+            "policy_material_signature": "a" * 64,
+        }
+        current = {
+            "match_run_id": "RUN-1",
+            "material_signature": "a" * 64,
+            "delivery_eligible": False,
+            "quality": {
+                "delivery_blockers": ["policy_clause_section_permission_violations:1"]
+            },
+        }
+        with self.assertRaisesRegex(RuntimeError, "not delivery eligible"):
+            verify_policy_validation_freshness(
+                summary, current, has_policy_chapters=True
+            )
+
     def test_adopted_report_validates_and_builds_structural_docx(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -90,7 +127,11 @@ class ReportAssemblyDeliveryTests(unittest.TestCase):
             self.assertEqual(assembled["missing_adopted_sections"], [])
             self.assertIn("# 第1章 总论", assembled["content"])
             validation = validate_report(database, "TEST-DELIVERY-001", mode="delivery")
-            self.assertEqual(validation["status"], "passed")
+            self.assertEqual(validation["status"], "failed")
+            self.assertIn(
+                "GATE-REQUIRED-POLICY-CHAPTERS",
+                {item["location"] for item in validation["issues"]},
+            )
 
             output = root / "report.docx"
             working = build_docx(
@@ -191,6 +232,14 @@ class ReportAssemblyDeliveryTests(unittest.TestCase):
             )
             validate_draft(database, "TEST-DELIVERY-HASH", "1.1.1", 1)
             manage_draft(database, "TEST-DELIVERY-HASH", "1.1.1", 1, "adopt")
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    "UPDATE project SET document_type='test_document' WHERE project_code='TEST-DELIVERY-HASH'"
+                )
+                connection.commit()
+            finally:
+                connection.close()
             validation = validate_report(database, "TEST-DELIVERY-HASH", mode="delivery")
             self.assertEqual(validation["status"], "passed")
             assembled = assemble(database, "TEST-DELIVERY-HASH", "delivery")

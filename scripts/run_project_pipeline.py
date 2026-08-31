@@ -51,10 +51,15 @@ from match_document_standards import (
 from match_project_policies import (
     MATCHER_VERSION as POLICY_MATCHER_VERSION,
     match as match_project_policies,
+    policy_match_input_signature,
     to_markdown as policy_markdown,
 )
-from match_policy_catalog_candidates import match_candidates as match_policy_catalog_candidates
-from match_policy_catalog_candidates import to_markdown as policy_catalog_markdown
+from match_policy_catalog_candidates import (
+    load_basis_profile,
+    load_project_policy_context,
+    match_candidates as match_policy_catalog_candidates,
+    to_markdown as policy_catalog_markdown,
+)
 from postgres_knowledge_db import canonical_json
 from postgres_knowledge_db import connect as connect_postgres
 from report_outline import build_outline_candidate, write_outline_outputs
@@ -69,6 +74,48 @@ SUPPORTED_SCOPE = {".xlsx"}
 EXPLICITLY_BLOCKED = {".pdf", ".doc", ".xls", ".xlsm", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 POLICY_SEED = SKILL_ROOT / "assets" / "knowledge-base" / "seeds" / "core_policy_seed_20260804.json"
+
+
+def project_policy_topics(
+    database: Path,
+    project_code: str,
+    configured_topics: set[str],
+) -> set[str]:
+    with connect(database) as connection:
+        project = connection.execute(
+            "SELECT * FROM project WHERE project_code=?",
+            (project_code,),
+        ).fetchone()
+        if project is None:
+            raise ValueError(f"project not found: {project_code}")
+        profile = load_basis_profile(str(project["project_type"]))
+        context = load_project_policy_context(connection, project, profile)
+    return (
+        set(configured_topics)
+        .union(profile.get("default_topics", []))
+        .union(context.get("scope_topics", []))
+    )
+
+
+def reusable_policy_run(
+    connection: Any,
+    project_id: str,
+    topic_json: str,
+    input_signature: str,
+) -> Any | None:
+    rows = connection.execute(
+        """
+        SELECT match_run_id,summary_json FROM policy_match_run
+        WHERE project_id=? AND matcher_version=? AND topic_tags_json=? AND status='completed'
+        ORDER BY completed_at DESC,started_at DESC,match_run_id DESC
+        """,
+        (project_id, POLICY_MATCHER_VERSION, topic_json),
+    ).fetchall()
+    for row in rows:
+        summary = json.loads(row["summary_json"] or "{}")
+        if summary.get("match_input_signature") == input_signature:
+            return row
+    return None
 DOCUMENT_STANDARD_SEED = SKILL_ROOT / "assets" / "knowledge-base" / "seeds" / "document_standard_seed_20260804.json"
 
 
@@ -433,14 +480,12 @@ def run_pipeline(
             }
         )
 
-    if policy_topics is None:
-        configured_topics = set(knowledge_settings.get("policy_topics", []))
-        policy_topics = configured_topics or {
-            topic
-            for policy in policy_seed.get("policies", [])
-            for clause in policy.get("clauses", [])
-            for topic in clause.get("topic_tags", [])
-        }
+    configured_topics = (
+        set(knowledge_settings.get("policy_topics", []))
+        if policy_topics is None
+        else set(policy_topics)
+    )
+    policy_topics = project_policy_topics(database, project_code, configured_topics)
 
     if knowledge_settings and knowledge_settings.get("mode") != "server_required":
         doctor_result = diagnose_settings(knowledge_settings)
@@ -805,23 +850,24 @@ def run_pipeline(
     else:
         policy_ingest = {**ingest_policies(database, policy_seed), "source": "bundled_seed"}
     standard_ingest = ingest_document_standards(database, standard_seed)
+    policy_topics = project_policy_topics(database, project_code, set(policy_topics))
     sorted_topics = sorted(policy_topics)
     with connect(database) as conn:
         project = conn.execute(
-            "SELECT project_id FROM project WHERE project_code=?", (project_code,)
+            "SELECT * FROM project WHERE project_code=?", (project_code,)
         ).fetchone()
-        existing_policy_run = conn.execute(
-            """
-            SELECT match_run_id FROM policy_match_run
-            WHERE project_id=? AND matcher_version=? AND topic_tags_json=? AND status='completed'
-            ORDER BY completed_at DESC,started_at DESC,match_run_id DESC LIMIT 1
-            """,
-            (
-                project["project_id"],
-                POLICY_MATCHER_VERSION,
-                json.dumps(sorted_topics, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-            ),
-        ).fetchone()
+        topic_json = json.dumps(
+            sorted_topics, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        current_policy_input_signature = policy_match_input_signature(
+            conn, project, set(sorted_topics)
+        )
+        existing_policy_run = reusable_policy_run(
+            conn,
+            project["project_id"],
+            topic_json,
+            current_policy_input_signature,
+        )
         existing_standard_run = conn.execute(
             """
             SELECT standard_match_run_id FROM document_standard_match_run

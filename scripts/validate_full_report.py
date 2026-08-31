@@ -8,13 +8,20 @@ import json
 import re
 from pathlib import Path
 
+from build_policy_section_material import build_material as build_policy_material
 from knowledge_db import apply_migrations, connect, dump_json, now_iso, sha256_text, stable_id
 from report_outline import build_outline_candidate
-from validate_section_draft import HIGH_RISK_NUMBER_PATTERN, EVIDENCE_MARKER_PATTERN, visible_length
+from validate_project_gates import policy_material_quality_checks
+from validate_section_draft import (
+    EVIDENCE_MARKER_PATTERN,
+    HIGH_RISK_NUMBER_PATTERN,
+    policy_content_quality_issues,
+    visible_length,
+)
 
 
 LANGUAGE_TERMS = ("全面领先", "彻底解决", "国际一流", "必然实现", "完全满足", "确保达到")
-PLACEHOLDER_PATTERN = re.compile(r"【(?:待补充|待确认|冲突|分析建议)[^】]*】")
+PLACEHOLDER_PATTERN = re.compile(r"【(?:待补充|待确认|待核验|冲突|分析建议)[^】]*】")
 
 
 def validate_report(
@@ -28,6 +35,35 @@ def validate_report(
         raise ValueError("mode must be working or delivery")
     residual_terms = [term.strip() for term in (residual_terms or []) if term.strip()]
     outline = build_outline_candidate(database, project_code)
+    with connect(database.resolve()) as requirement_connection:
+        project_requirement = requirement_connection.execute(
+            "SELECT document_type FROM project WHERE project_code=?", (project_code,)
+        ).fetchone()
+    requires_policy_chapters = bool(
+        project_requirement
+        and str(project_requirement["document_type"]) == "feasibility_study"
+    )
+    required_policy_chapter_codes = {"1.2.1", "2.1.1"}
+    policy_chapter_codes = {
+        str(node.get("node_code") or "")
+        for node in outline.get("nodes", [])
+        if node.get("node_kind") == "section"
+    }
+    policy_quality_checks = []
+    policy_material = None
+    policy_material_error = ""
+    if mode == "delivery" and (
+        requires_policy_chapters
+        or policy_chapter_codes.intersection(required_policy_chapter_codes)
+    ):
+        try:
+            policy_material = build_policy_material(database, project_code, mode="delivery")
+        except ValueError as exc:
+            policy_material_error = str(exc)
+        policy_quality_checks = policy_material_quality_checks(
+            policy_material,
+            material_error=policy_material_error,
+        )
     started_at = now_iso()
     issues: list[dict] = []
 
@@ -41,6 +77,34 @@ def validate_report(
                 "related_ids": list(ids),
                 "suggested_action": action,
             }
+        )
+
+    missing_policy_chapters = sorted(
+        required_policy_chapter_codes - policy_chapter_codes
+        if requires_policy_chapters
+        else set()
+    )
+    if missing_policy_chapters:
+        add(
+            "blocking" if mode == "delivery" else "high",
+            "required_policy_chapters",
+            "GATE-REQUIRED-POLICY-CHAPTERS",
+            "可行性研究报告必须同时包含1.2.1可行性研究报告编制依据和2.1.1政策背景，且不得标记为不适用。缺失："
+            + "、".join(missing_policy_chapters),
+            missing_policy_chapters,
+            "恢复两章的适用计划，按当前事实与已核验政策材料重新生成、校验并采纳。",
+        )
+
+    for check in policy_quality_checks:
+        if check["result"] == "pass":
+            continue
+        add(
+            "blocking" if check["result"] == "fail" else "high",
+            "policy_quality_gate",
+            check["gate_code"],
+            check["message"],
+            [check["gate_code"]],
+            "补齐正式政策证据、属地事实和数量/顺序缺口后重新运行全文delivery校验。",
         )
 
     with connect(database.resolve()) as conn:
@@ -188,6 +252,23 @@ def validate_report(
                     [draft["draft_version_id"]],
                     "以 delivery 模式重新运行章节校验并处理全部占位与待确认项。",
                 )
+            if mode == "delivery" and plan["chapter_code"] in {"1.2.1", "2.1.1"}:
+                for issue in policy_content_quality_issues(
+                    draft["content"],
+                    plan["chapter_code"],
+                    policy_material,
+                    mode=mode,
+                    material_error=policy_material_error,
+                    check_quality_gates=False,
+                ):
+                    add(
+                        issue["severity"],
+                        "policy_content_binding",
+                        plan["chapter_code"],
+                        issue["description"],
+                        [draft["draft_version_id"], issue["code"]],
+                        "按当前政策匹配运行和事实/范围基线重新生成、校验并采纳政策章节。",
+                    )
             if plan["length_min"] and visible_length(draft["content"]) < plan["length_min"]:
                 add(
                     "blocking" if mode == "delivery" else "high",
@@ -346,6 +427,12 @@ def validate_report(
                     "outline_version_id": outline["outline_version_id"],
                     "outline_hash": outline["outline_hash"],
                     "outline_status": outline["status"],
+                    "policy_match_run_id": (
+                        policy_material.get("match_run_id", "") if policy_material else ""
+                    ),
+                    "policy_material_signature": (
+                        policy_material.get("material_signature", "") if policy_material else ""
+                    ),
                 }),
             ),
         )
@@ -384,6 +471,10 @@ def validate_report(
         "outline_version_id": outline["outline_version_id"],
         "outline_hash": outline["outline_hash"],
         "outline_status": outline["status"],
+        "policy_match_run_id": policy_material.get("match_run_id", "") if policy_material else "",
+        "policy_material_signature": (
+            policy_material.get("material_signature", "") if policy_material else ""
+        ),
         "issues": issues,
     }
 

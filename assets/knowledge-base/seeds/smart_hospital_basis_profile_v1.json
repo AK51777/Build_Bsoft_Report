@@ -1,0 +1,207 @@
+{
+  "schema_version": "1.0",
+  "profile_version": "SMART_HOSPITAL_CORE_V1.1",
+  "profile_name": "医院单体智慧医院与信息化整体能力提升",
+  "applicable_project_types": [
+    "hospital_informationization",
+    "smart_hospital",
+    "hospital_digital_transformation"
+  ],
+  "source_boundary": {
+    "policy_catalog_table": "policy_catalog_entry",
+    "catalog_entries_are_candidates": true,
+    "formal_policy_requires": [
+      "policy_document.verification_status=verified",
+      "policy_document.validity_status=current",
+      "policy_clause.verification_status=verified",
+      "project_policy_match.decision_status=user_confirmed"
+    ],
+    "fixed_standard_note": "固定组只提供受控召回基线；除标记为official_reference_verified的条目外，定稿前仍须核验现行状态和官方来源。"
+  },
+  "project_fact_contract": {
+    "required_for_delivery": [
+      "jurisdiction.province",
+      "jurisdiction.prefecture",
+      "organization.institution_type",
+      "organization.ownership",
+      "project.report_type",
+      "investment.regime"
+    ],
+    "optional_scope_facts": [
+      "organization.hospital_grade",
+      "investment.funding_source",
+      "acceptance.emr_level",
+      "acceptance.interop_level"
+    ],
+    "rule": "政策名称不得作为项目事实写入；政策画像必须保留所用事实ID，缺失事实只形成缺口，不得由医院名称或参考报告反推。"
+  },
+  "quantity_rules": {
+    "policy_basis": {"minimum": 16, "target": 20, "maximum": 28},
+    "industry_standard": {"minimum": 20, "target": 24, "maximum": 32},
+    "security_standard": {"minimum": 16, "target": 18, "maximum": 24},
+    "investment_basis": {"minimum": 5, "target": 7, "maximum": 12}
+  },
+  "policy_background_quantity_rules": {
+    "national": {"minimum": 8, "target": 12, "maximum": 16},
+    "province": {"minimum": 2, "target": 3, "maximum": 5},
+    "prefecture": {"minimum": 1, "target": 2, "maximum": 4}
+  },
+  "default_topics": [
+    "hospital_informationization",
+    "smart_hospital",
+    "hospital_platform",
+    "electronic_medical_record",
+    "interoperability",
+    "standardization",
+    "hospital_management",
+    "patient_service",
+    "cybersecurity",
+    "data_security"
+  ],
+  "scope_topic_rules": [
+    {"pattern": "电子病历|病历质控|病案", "topics": ["electronic_medical_record"]},
+    {"pattern": "互联互通|集成平台|信息平台|接口平台|ESB", "topics": ["interoperability", "hospital_platform"]},
+    {"pattern": "互联网医院|互联网诊疗", "topics": ["internet_health", "internet_hospital"]},
+    {"pattern": "远程医疗|远程会诊", "topics": ["internet_health", "telemedicine"]},
+    {"pattern": "影像|PACS|放射|超声", "topics": ["medical_imaging"]},
+    {"pattern": "检验|LIS", "topics": ["laboratory_informationization"]},
+    {"pattern": "数据中心|数据治理|数据仓库|主数据|数据平台|数据交换", "topics": ["data_governance", "hospital_platform"]},
+    {"pattern": "患者服务|预约诊疗|移动医疗|电子健康卡", "topics": ["patient_service"]},
+    {"pattern": "智慧管理|运营管理|决策支持|绩效管理", "topics": ["hospital_management"]},
+    {"pattern": "网络安全|数据安全|等保|等级保护|密码|灾备|备份", "topics": ["cybersecurity", "data_security"]},
+    {"pattern": "人工智能|AI|大模型|临床决策支持", "topics": ["medical_ai"]},
+    {"pattern": "基础设施|机房|云平台|服务器|存储|网络设备", "topics": ["infrastructure"]},
+    {"pattern": "移动护理|护理信息", "topics": ["nursing_informationization"]}
+  ],
+  "allow_topic_fallback": false,
+  "exclusion_patterns": [
+    "征求意见稿",
+    "公开征求意见",
+    "草案",
+    "已废止",
+    "已失效"
+  ],
+  "historical_period_patterns": [
+    "十三五",
+    "2016—2020",
+    "2021—2025",
+    "十四五"
+  ],
+  "catalog_rules": [
+    {"pattern": "中华人民共和国国民经济和社会发展第十五个五年规划纲要", "basis_section": "policy_basis", "suggested_use": "background", "importance": 100},
+    {"pattern": "数字中国建设整体布局规划", "basis_section": "policy_basis", "suggested_use": "background", "importance": 99},
+    {"pattern": "健康中国\\s*2030", "basis_section": "policy_basis", "suggested_use": "background", "importance": 98},
+    {"pattern": "进一步完善医疗卫生服务体系的意见", "basis_section": "policy_basis", "suggested_use": "background", "importance": 97},
+    {"pattern": "推动公立医院高质量发展的意见", "basis_section": "policy_basis", "suggested_use": "background", "importance": 96, "requires_context_any": ["公立"]},
+    {"pattern": "抓好推动公立医院高质量发展意见落实", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 91, "requires_context_any": ["公立"]},
+    {"pattern": "公立医院高质量发展评价指标（试行）", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 90, "requires_context_any": ["公立"]},
+    {"pattern": "促进.*互联网\\+医疗健康.*意见", "basis_section": "policy_basis", "suggested_use": "background", "importance": 95, "requires_topic_any": ["internet_health", "internet_hospital"]},
+    {"pattern": "互联网诊疗监管细则", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 93, "requires_topic_any": ["internet_health", "internet_hospital"]},
+    {"pattern": "互联网\\+医疗健康.*五个一", "basis_section": "policy_basis", "suggested_use": "background", "importance": 89, "requires_topic_any": ["internet_health", "internet_hospital"]},
+    {"pattern": "全民健康信息平台体系建设应用指南", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 94},
+    {"pattern": "全民健康信息标准化体系建设", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 94},
+    {"pattern": "进一步推进以电子病历为核心", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 95},
+    {"pattern": "完善预约诊疗制度.*智慧医院建设", "basis_section": "policy_basis", "suggested_use": "background", "importance": 93},
+    {"pattern": "医疗机构电子病历信息使用管理", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 96},
+    {"pattern": "医疗机构检查检验结果互认管理办法", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 92, "requires_topic_any": ["medical_imaging", "laboratory_informationization"]},
+    {"pattern": "进一步推进医疗机构检查检验结果互认", "basis_section": "policy_basis", "suggested_use": "background", "importance": 94, "requires_topic_any": ["medical_imaging", "laboratory_informationization"]},
+    {"pattern": "卫生健康统计工作管理办法", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 88},
+    {"pattern": "全国医院上报数据统计分析指标集", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 87},
+    {"pattern": "国家数据标准体系建设指南", "basis_section": "policy_basis", "suggested_use": "background", "importance": 89},
+    {"pattern": "加快推进全民健康信息平台互联互通", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 88},
+    {"pattern": "加快推进电子健康卡普及应用", "basis_section": "policy_basis", "suggested_use": "basis", "importance": 86},
+    {"pattern": "十四五.*全民健康信息化规划", "basis_section": "policy_basis", "suggested_use": "historical_background", "importance": 75},
+    {"pattern": "全国医院信息化建设标准与规范", "basis_section": "industry_standard", "suggested_use": "technical", "importance": 98},
+    {"pattern": "医院信息平台应用功能指引", "basis_section": "industry_standard", "suggested_use": "technical", "importance": 96},
+    {"pattern": "电子病历系统应用水平分级评价", "basis_section": "industry_standard", "suggested_use": "performance", "importance": 97},
+    {"pattern": "医院信息互联互通标准化成熟度测评", "basis_section": "industry_standard", "suggested_use": "performance", "importance": 97},
+    {"pattern": "医院智慧服务分级评估标准", "basis_section": "industry_standard", "suggested_use": "performance", "importance": 95},
+    {"pattern": "医院智慧管理分级评估标准", "basis_section": "industry_standard", "suggested_use": "performance", "importance": 94},
+    {"pattern": "公立医院运营管理信息化功能指引", "basis_section": "industry_standard", "suggested_use": "technical", "importance": 91, "requires_context_any": ["公立"]},
+    {"pattern": "医疗卫生机构网络安全管理办法", "basis_section": "security_standard", "suggested_use": "security", "importance": 99},
+    {"pattern": "网络数据安全管理条例", "basis_section": "security_standard", "suggested_use": "security", "importance": 98},
+    {"pattern": "关键信息基础设施商用密码使用管理规定", "basis_section": "security_standard", "suggested_use": "security", "importance": 94},
+    {"pattern": "社会领域中央预算内投资相关专项管理办法", "basis_section": "investment_basis", "suggested_use": "investment", "importance": 95}
+  ],
+  "fixed_entry_topic_requirements": {
+    "IND-021": ["medical_imaging"],
+    "IND-022": ["medical_imaging"],
+    "IND-023": ["medical_imaging"],
+    "IND-024": ["telemedicine"],
+    "IND-025": ["telemedicine"],
+    "IND-026": ["telemedicine"],
+    "IND-027": ["telemedicine"]
+  },
+  "fixed_basis_groups": {
+    "industry_standard": [
+      ["IND-001", "全国医院信息化建设标准与规范（试行）", "国卫办规划发〔2018〕4号"],
+      ["IND-002", "医院信息平台应用功能指引", "国卫办规划函〔2016〕1110号"],
+      ["IND-003", "医院信息化建设应用技术指引（2017年版，试行）", "国卫办规划函〔2017〕1232号"],
+      ["IND-004", "电子病历系统功能规范（试行）", "卫医政发〔2010〕114号"],
+      ["IND-005", "电子病历应用管理规范（试行）", "国卫办医发〔2017〕8号"],
+      ["IND-006", "电子病历系统应用水平分级评价管理办法（试行）", "国卫办医函〔2018〕1079号"],
+      ["IND-007", "电子病历系统应用水平分级评价标准（试行）", "国卫办医函〔2018〕1079号"],
+      ["IND-008", "国家医疗健康信息医院信息互联互通标准化成熟度测评方案（2020年版）", "国卫统信便函〔2020〕30号"],
+      ["IND-009", "医院智慧服务分级评估标准体系（试行）", "国卫办医函〔2019〕236号"],
+      ["IND-010", "医院智慧管理分级评估标准体系（试行）", "国卫办医函〔2021〕86号"],
+      ["IND-011", "全国医院数据上报管理方案（试行）", "国卫办规划函〔2019〕380号"],
+      ["IND-012", "基于电子病历的医院信息平台技术规范", "WS/T 447—2014"],
+      ["IND-013", "医院信息平台交互标准 第1部分至第11部分", "WS/T 846.1—2024至WS/T 846.11—2024"],
+      ["IND-014", "医疗电子文书数字签名技术标准", "WS/T 847—2024"],
+      ["IND-015", "电子病历基本数据集 第1部分至第17部分", "WS 445.1—2014至WS 445.17—2014"],
+      ["IND-016", "电子病历共享文档规范 第1部分至第53部分", "WS/T 500.1—2016至WS/T 500.53—2016"],
+      ["IND-017", "电子病历与医院信息平台标准符合性测试规范", "WS/T 501—2016"],
+      ["IND-018", "卫生信息共享文档编制规范", "WS/T 482—2016"],
+      ["IND-019", "卫生健康信息数据元目录 第1部分至第17部分", "WS/T 363.1—2023至WS/T 363.17—2023"],
+      ["IND-020", "卫生健康信息数据元值域代码 第1部分至第17部分", "WS/T 364.1—2023至WS/T 364.17—2023"],
+      ["IND-021", "医学数字影像通信基本数据集", "WS 538—2017"],
+      ["IND-022", "医学数字影像中文封装与通信规范", "WS/T 544—2017"],
+      ["IND-023", "医学数字影像通信（DICOM）中文标准符合性测试规范", "WS/T 548—2017"],
+      ["IND-024", "远程医疗信息基本数据集", "WS 539—2017"],
+      ["IND-025", "远程医疗信息系统基本功能规范", "WS/T 529—2016"],
+      ["IND-026", "远程医疗信息系统技术规范", "WS/T 545—2017"],
+      ["IND-027", "远程医疗信息系统与统一通信平台交互规范", "WS/T 546—2017"],
+      ["IND-028", "患者身份识别管理标准", "WS/T 840—2025"],
+      ["IND-029", "健康档案共享文档规范", "WS/T 483—2016"]
+    ],
+    "security_standard": [
+      ["SEC-001", "中华人民共和国网络安全法", ""],
+      ["SEC-002", "中华人民共和国数据安全法", ""],
+      ["SEC-003", "中华人民共和国个人信息保护法", ""],
+      ["SEC-004", "中华人民共和国密码法", ""],
+      ["SEC-005", "网络数据安全管理条例", "国务院令第790号"],
+      ["SEC-006", "医疗卫生机构网络安全管理办法", "国卫规划发〔2022〕29号"],
+      ["SEC-007", "信息安全技术 网络安全等级保护基本要求", "GB/T 22239—2019"],
+      ["SEC-008", "信息安全技术 网络安全等级保护定级指南", "GB/T 22240—2020"],
+      ["SEC-009", "信息安全技术 网络安全等级保护安全设计技术要求", "GB/T 25070—2019"],
+      ["SEC-010", "信息安全技术 网络安全等级保护测评要求", "GB/T 28448—2019"],
+      ["SEC-011", "信息安全技术 网络安全等级保护测评过程指南", "GB/T 28449—2018"],
+      ["SEC-012", "信息安全技术 网络安全等级保护测试评估技术指南", "GB/T 36627—2018"],
+      ["SEC-013", "信息安全技术 个人信息安全规范", "GB/T 35273—2020"],
+      ["SEC-014", "信息安全技术 信息系统密码应用基本要求", "GB/T 39786—2021"],
+      ["SEC-015", "信息系统密码应用测评要求", "GM/T 0115—2021"],
+      ["SEC-016", "信息系统密码应用测评过程指南", "GM/T 0116—2021"],
+      ["SEC-017", "商用密码应用安全性评估管理办法", "国家密码管理局令第3号"],
+      ["SEC-018", "信息安全技术 密码模块安全要求", "GB/T 37092—2018"],
+      ["SEC-019", "SSL VPN技术规范", "GM/T 0024—2023"],
+      ["SEC-020", "信息技术服务 运行维护 第1部分：通用要求", "GB/T 28827.1—2022"],
+      ["SEC-021", "信息技术服务 运行维护 第3部分：应急响应规范", "GB/T 28827.3—2022"]
+    ],
+    "investment_basis": [
+      ["INV-001", "国家发展改革委关于印发投资项目可行性研究报告编写大纲及说明的通知", "发改投资规〔2023〕304号"],
+      ["INV-002", "政府投资条例", "国务院令第712号"],
+      ["INV-003", "软件工程 软件开发成本度量规范", "GB/T 36964—2018"],
+      ["INV-004", "软件研发成本度量规范", "SJ/T 11463—2013"],
+      ["INV-005", "项目支出绩效评价管理办法", "财预〔2020〕10号"],
+      ["INV-006", "建设项目经济评价方法与参数", "发改投资〔2006〕1325号"],
+      ["INV-007", "基本建设项目建设成本管理规定", "财建〔2016〕504号"]
+    ]
+  },
+  "fixed_entry_defaults": {
+    "source_type": "controlled_basis_profile",
+    "candidate_only": true,
+    "verification_status": "benchmark_candidate",
+    "delivery_eligible": false,
+    "provenance": "LINZHI-FSR-20260820 basis benchmark; official current-status verification required before delivery"
+  }
+}
