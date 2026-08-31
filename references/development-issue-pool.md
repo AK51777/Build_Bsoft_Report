@@ -78,6 +78,8 @@
 
 | DEV-064 | 合并后快照外键修复测试将待执行迁移精确限定为单项，新增独立政策迁移后产生误报 | P1 | 合并回归 | A | 合并后全量187项中仅`test_legacy_broken_foreign_key_is_repaired_without_data_loss`失败，实际完成两个合法018迁移且数据校验未失败 | 测试把当前迁移集合假设写成了外键修复业务断言 | 已验证 | `20260831-DEV-064-concurrent-migration-regression` | 改为验证目标修复迁移包含于完成集合，继续检查外键目标、数据无损、foreign_key_check和级联删除；迁移定向24项、合并后全量187项通过 |
 
+| DEV-065 | PostgreSQL 010迁移在既有运行视图中间插入完整性字段时被识别为重命名旧列并回滚 | P0 | 共享知识迁移 | A | 生产单事务执行报错`cannot change name of view column source_location to source_section_id`，迁移与登记均未落库 | 010未保持`runtime_corpus_block`既有列顺序，将三个新增列插入`block_index`之后 | 处理中 | `20260831-DEV-065-postgres-010-view-column-order` | 新字段改为追加到运行视图末尾，并补充列顺序回归后重新执行生产迁移 |
+
 ## 新问题模板
 
 | ID | 问题描述 | 严重程度 | 模块 | 分类 | 证据 | 唯一根因假设 | 状态 | 关联测试/run_id | 处理结论 |

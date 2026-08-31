@@ -231,6 +231,20 @@ class PostgresKnowledgeRepositoryTests(unittest.TestCase):
             migration_sql,
         )
 
+    def test_standard_solution_coverage_migration_appends_runtime_view_columns(self) -> None:
+        migration_sql = (
+            migration_dir() / "010_standard_solution_coverage.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "block.visible_text_hash,\n  block.source_section_id,\n"
+            "  block.chunk_index,\n  block.source_is_heading",
+            migration_sql,
+        )
+        self.assertNotIn(
+            "block.block_index,\n  block.source_section_id",
+            migration_sql,
+        )
+
     def test_policy_catalog_snapshot_payload_preserves_candidate_boundaries(self) -> None:
         payload = catalog_payload_from_rows(
             {

@@ -34,9 +34,6 @@ SELECT
   document.permission_scope,
   block.block_id,
   block.block_index,
-  block.source_section_id,
-  block.chunk_index,
-  block.source_is_heading,
   block.source_location,
   block.heading_path,
   block.section_role,
@@ -62,7 +59,10 @@ SELECT
   block.content_format,
   block.content_payload,
   block.asset_manifest,
-  block.visible_text_hash
+  block.visible_text_hash,
+  block.source_section_id,
+  block.chunk_index,
+  block.source_is_heading
 FROM medical_report_kb.knowledge_package AS package
 JOIN medical_report_kb.corpus_document AS document ON document.package_id = package.package_id
 JOIN medical_report_kb.corpus_block AS block ON block.corpus_document_id = document.corpus_document_id
