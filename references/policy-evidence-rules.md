@@ -10,6 +10,14 @@
 
 部门目录的原始索引号不是数据库唯一键。索引号重复时必须保留全部来源行，记录出现次序并标记 `index_conflict`；不得静默覆盖、合并或丢弃。候选匹配按来源行稳定排序，标题级候选统一标记为 `structure_only` 和 `candidate_only`。
 
+## 1.1 原文采集暂存与正式证据隔离
+
+目录发布后可用 `capture_policy_sources_postgres.py` 对全部活动目录项建立原文采集状态。首次调用必须先运行 dry-run；生产写入必须同时给出 `--apply` 和与目标数据库精确一致的 `--confirm-database`。采集器默认不继承系统代理，确需使用受控代理时显式指定 `--use-system-proxy`；原始 HTML、PDF 或附件应保存到仓库外私有归档目录，并在数据库保存最终URL、HTTP状态、内容类型、原始哈希、提取文本及哈希、附件URL、身份匹配结果、抓取错误和核验状态。
+
+`policy_source_capture` 是全量、可恢复、未核验的暂存层，允许保存缺链接、非法链接、HTTP 403/404/410/412、网络失败、超限文件、二进制待提取和正文身份不匹配等状态。草案、征求意见稿、内部材料、专家共识和会议谈话必须标为 `draft_or_internal` 或 `reference_only`。任何采集结果默认均为 `unverified/pending`；`review_policy_source_capture_latest` 只供补链、重试和人工核验，不属于 `runtime_*` 正式证据视图，也不得直接生成编制依据或政策背景。
+
+完成正文采集后仍须逐文件核对正式名称、文号、发布机关、发布日期、最终官方URL、效力和替代关系，再切分必要条款，填写审慎摘要、用途许可、禁用主张、主题和适用对象。只有经受控复核生成的 payload 才可交给 `import_verified_policies_postgres.py --publish`；禁止把采集文本整篇自动切一条、批量标记为 `verified` 或直接复制为 `policy_document` / `policy_clause`。
+
 ## 2. 进入依据的最低条件
 
 1. 正式名称、文号、发布单位和发布日期已核验；原文没有文号时明确为空，不编造。

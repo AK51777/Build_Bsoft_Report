@@ -184,6 +184,15 @@ python scripts/import_policy_catalog_postgres.py <部门政策目录.json> `
   --publish --host 127.0.0.1 --port <本机隧道端口> `
   --database <数据库> --user <用户> --output policy-catalog-import.json
 
+python scripts/capture_policy_sources_postgres.py `
+  --host 127.0.0.1 --port <本机隧道端口> `
+  --database <数据库> --user <用户> --output policy-source-capture-plan.json
+
+python scripts/capture_policy_sources_postgres.py `
+  --apply --confirm-database <数据库> --archive-dir <仓库外政策原文归档目录> `
+  --host 127.0.0.1 --port <本机隧道端口> `
+  --database <数据库> --user <用户> --output policy-source-capture-result.json
+
 python scripts/import_verified_policies_postgres.py <已核验政策条款.json> `
   --publish --host 127.0.0.1 --port <本机隧道端口> `
   --database <数据库> --user <用户> --output verified-policy-import.json
@@ -194,7 +203,7 @@ python scripts/sync_postgres_knowledge_snapshot.py <项目knowledge.sqlite> <项
   --database <数据库> --user <用户> --output snapshot-sync.json
 ```
 
-`policy_catalog` 是部门整理的候选目录；`policy_document` / `policy_clause` 才是完成官方核验后可进入正文的正式证据。两者不能批量等同转换。只有显式 `--publish` 且满足审核状态的记录会出现在 `runtime_*` 视图，项目同步脚本只读取这些视图。
+`policy_catalog` 是部门整理的候选目录；`policy_source_capture` 保存全量原文采集状态和未核验提取文本；`policy_document` / `policy_clause` 才是完成官方核验后可进入正文的正式证据。三层不能批量等同转换。采集器默认 dry-run，生产写入必须同时使用 `--apply` 和精确数据库确认参数；缺链接、失效链接、反爬响应、二进制附件、草案、内部材料、共识和会议资料都保留为待处理状态。只有显式 `--publish` 且满足审核状态的正式文件和条款会出现在 `runtime_*` 视图，项目同步脚本只读取这些视图。
 
 没有服务器时，也可以先把目录直接导入单个项目库并生成有限候选清单：
 
@@ -350,6 +359,7 @@ flowchart TD
 | `audit_postgres_schema.py` | 只读导出服务器迁移哈希、表、字段、约束和索引，供升级前审计。 |
 | `import_standard_knowledge_pack_postgres.py` | 将受审标准语料、能力和能力—语料关系导入并显式发布。 |
 | `import_policy_catalog_postgres.py` | 导入部门政策候选目录；目录项不自动成为正式政策证据。 |
+| `capture_policy_sources_postgres.py` | 对全部活动目录项采集官方页面/附件线索，保存未核验正文、哈希、身份匹配和可恢复错误状态；不自动发布正式政策。 |
 | `import_verified_policies_postgres.py` | 导入完成官方核验的政策文件、条款、主题和核验记录。 |
 | `query_postgres_knowledge.py` | 对发布视图进行有数量上限的只读查询。 |
 | `provision_postgres_runtime_reader.py` | 默认 dry-run；经管理员明确批准后，创建或收紧仅可读取 migration 台账和发布运行视图的专用账号，并验证无基础表写权限。 |
@@ -432,6 +442,7 @@ flowchart TD
 | `corpus_document` / `corpus_block` | 洗好的标准方案文档和原子段落。 |
 | `product_capability` / `capability_block` | 标准清单能力及可引用正文块。 |
 | `policy_catalog` / `policy_catalog_entry` | 部门政策候选目录。 |
+| `policy_source_capture` / `review_policy_source_capture_latest` | 未核验政策原文采集历史与最新复核队列；不属于正式运行证据。 |
 | `policy_document` / `policy_clause` | 官方核验后的正式政策文件和条款。 |
 | `runtime_*` | 只暴露已发布、已审核、已核验记录的运行视图。 |
 

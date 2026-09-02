@@ -58,7 +58,7 @@ description: Create evidence-based Chinese government-investment medical informa
 
 0. 任务定义：形成项目任务书，明确名称、文档类型、范围依据、验收目标、参考限制、未知事项处理和版本规则。
 1. 资料与事实：登记来源，提取原子事实，登记单位、时点、位置、状态、冲突、缺失和确认问题。
-1P. 政策证据：先从已确认项目事实和 `status='confirmed'` 的本期建设范围建立地域、机构、文种、投资制度和建设主题画像，再从共享政策库召回候选；不得用医院名称、参考稿、待确认范围或模型记忆反推政策。智慧医院项目按“政策类依据、行业标准依据、安全类标准依据、投资估算编制依据”四组生成，并执行 `smart_hospital_basis_profile_v1.json` 的16/20/16/5硬下限；地方政策背景执行国家8、省/自治区2、市/项目地区1的硬下限。政策背景只能从同一政策类依据选择，保持精确同序，按国家—省/自治区—市/项目地区展开。目录候选与正式条款匹配运行都必须绑定完整输入签名，属地、确认事实/范围、主题、画像、目录或正式政策语料任一变化即重匹配。标题级 `policy_catalog_entry` 和固定基准清单只能进入待核验工作稿；未经 `policy_document`、已发布核验条款、官方来源、效力、用途许可及用户确认不得进入交付稿。
+1P. 政策证据：先从已确认项目事实和 `status='confirmed'` 的本期建设范围建立地域、机构、文种、投资制度和建设主题画像，再从共享政策库召回候选；不得用医院名称、参考稿、待确认范围或模型记忆反推政策。部门目录的全部记录可先进入 `policy_source_capture` 原文采集暂存层；缺链接、失效链接、反爬响应、附件待提取、草案、内部材料、共识和会议资料必须保留独立状态，采集正文一律保持 `unverified/pending`，不得自动进入正式运行视图。智慧医院项目按“政策类依据、行业标准依据、安全类标准依据、投资估算编制依据”四组生成，并执行 `smart_hospital_basis_profile_v1.json` 的16/20/16/5硬下限；地方政策背景执行国家8、省/自治区2、市/项目地区1的硬下限。政策背景只能从同一政策类依据选择，保持精确同序，按国家—省/自治区—市/项目地区展开。目录候选与正式条款匹配运行都必须绑定完整输入签名，属地、确认事实/范围、主题、画像、目录或正式政策语料任一变化即重匹配。标题级 `policy_catalog_entry`、采集暂存正文和固定基准清单只能进入待核验工作稿；未经 `policy_document`、已发布核验条款、官方来源、效力、用途许可及用户确认不得进入交付稿。
 2. 清单与范围：标准化客户建设清单，区分建设方式和费用类型，映射公司能力但不改变客户边界。
 3. 参考方案：按章节评估结构和写法复用，形成允许内容、禁止内容和残留扫描词表。
 4. 贯通矩阵与目录：建立“问题—需求—建设—投资—指标—效益”链条，再形成三级主目录；建设内容按客户范围、确认能力和受审语料动态展开到四至七级。
@@ -158,6 +158,8 @@ MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/init_postgres_knowledg
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/audit_postgres_schema.py --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output postgres-schema-audit.json
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/import_standard_knowledge_pack_postgres.py <local-private-pack.json> --publish --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output postgres-pack-import.json
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/import_policy_catalog_postgres.py <reviewed-policy-catalog.json> --publish --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output policy-catalog-import.json
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/capture_policy_sources_postgres.py --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output policy-source-capture-plan.json
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/capture_policy_sources_postgres.py --apply --confirm-database <database> --archive-dir <private-policy-archive> --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output policy-source-capture-result.json
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/import_verified_policies_postgres.py <verified-policy-documents.json> --publish --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output verified-policy-import.json
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/sync_postgres_knowledge_snapshot.py <knowledge.sqlite> <project-code> --package-id <package-id> --catalog-id <catalog-id> --policy-topic <topic> --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output snapshot-sync.json
 MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/query_postgres_knowledge.py package --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user> --output published-packages.json
