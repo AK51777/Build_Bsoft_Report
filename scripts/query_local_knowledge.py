@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from knowledge_db import apply_migrations, connect
+from knowledge_db import apply_migrations, connect, connect_readonly
 
 
 def _json_list(value: Any) -> list[Any]:
@@ -44,6 +44,7 @@ def query_local(
     prerequisites: list[str] | None = None,
     search: str = "",
     limit: int = 50,
+    migrate: bool = True,
 ) -> dict[str, Any]:
     if limit < 1 or limit > 200:
         raise ValueError("limit must be between 1 and 200")
@@ -52,8 +53,10 @@ def query_local(
     tag_set = set(tags or ([] if not topic else [topic]))
     prerequisite_set = set(prerequisites or [])
     search_folded = search.casefold().strip()
-    with connect(database.resolve()) as conn:
-        apply_migrations(conn)
+    connector = connect if migrate else connect_readonly
+    with connector(database.resolve()) as conn:
+        if migrate:
+            apply_migrations(conn)
         if kind == "status":
             row = conn.execute(
                 """

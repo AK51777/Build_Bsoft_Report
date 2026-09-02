@@ -1,6 +1,6 @@
 ---
 name: build-medical-it-feasibility-report
-description: Create evidence-based Chinese government-investment medical informationization feasibility reports from mixed project materials and reusable company knowledge. Use for medical IT feasibility studies, construction-list normalization, cleaned knowledge corpora, standard-solution reuse, shared PostgreSQL knowledge packages, project SQLite snapshot synchronization, cross-project knowledge reuse, fact and policy ledgers, scope-capability mapping, dynamic construction chapters, complete evidence-bound drafts, validation, or style-preserving Word delivery. Also use for any single stage when prior artifacts already exist.
+description: Create evidence-based Chinese government-investment medical informationization feasibility reports from mixed project materials and reusable company knowledge. Use for medical IT feasibility studies, construction-list normalization, cleaned knowledge corpora, standard-solution reuse, split local SQLite or shared PostgreSQL knowledge packages, project SQLite snapshot synchronization, cross-project knowledge reuse, fact and policy ledgers, scope-capability mapping, dynamic construction chapters, complete evidence-bound drafts, validation, or style-preserving Word delivery. Also use for any single stage when prior artifacts already exist.
 ---
 
 # 医疗信息化可研生成
@@ -13,15 +13,16 @@ description: Create evidence-based Chinese government-investment medical informa
 
 ## 开始前
 
-1. 读取 `references/knowledge-connection-rules.md`。若环境提供`knowledge_access_status`，先检查远程只读知识访问：未激活时只向用户索取一次性激活码并调用`activate_knowledge_access`，不得回显或记录激活码；已激活时调用`knowledge_service_status`。否则解析`knowledge.mode`和用户级profile；不得要求每个新项目重复填写数据库主机、端口、库名和用户。
-2. `server_required`必须先运行知识诊断并从发布运行视图同步。远程只读路径先用`knowledge_query`明确选择package/catalog ID，再运行`sync_remote_knowledge_snapshot.py`写入项目SQLite并验证快照；不得在正文阶段直接以远程查询结果替代项目快照。`snapshot_required`必须验证本地快照；`offline_pack`必须导入受审离线包；`disabled`必须明确记录未使用共享知识。任一知识门禁失败时在S0阻断。
-3. 同步或验证后报告 profile、连接状态、使用来源、package/catalog IDs、内容哈希、同步时间、权限范围及语料、能力、目录数量。数据量为零时禁止声称已经使用共享知识。
+1. 读取 `references/knowledge-connection-rules.md` 和 `references/local-knowledge-package-rules.md`。若用户级本地知识配置或 `MEDICAL_REPORT_LOCAL_KB_CONFIG` 存在，先运行 `local_knowledge_packages.py status`；两个包有效时优先用本地包同步项目快照。配置存在但必需包缺失或损坏时阻断，不得静默换用远程数据。
+2. 本地路径固定使用 `standard-knowledge.sqlite` 和 `policy-knowledge.sqlite`，先运行 `sync-project` 写入项目 SQLite，再以 `snapshot_required` 生成。远程只读 MCP 继续保留；用户显式选择远程或未配置本地包时，若环境提供`knowledge_access_status`，检查激活状态并按需调用`activate_knowledge_access`或`knowledge_service_status`，不得回显或记录激活码。否则解析`knowledge.mode`和用户级profile；不得要求每个新项目重复填写数据库主机、端口、库名和用户。
+3. `server_required`必须先运行知识诊断并从发布运行视图同步。远程只读路径先用`knowledge_query`明确选择package/catalog ID，再运行`sync_remote_knowledge_snapshot.py`写入项目SQLite并验证快照；不得在正文阶段直接以远程查询结果替代项目快照。`snapshot_required`必须验证本地快照；`offline_pack`必须导入受审离线包；`disabled`必须明确记录未使用共享知识。任一知识门禁失败时在S0阻断。
+4. 同步或验证后报告 profile、连接状态、使用来源、package/catalog IDs、发布 ID、版本、内容哈希、同步时间、权限范围及语料、能力、目录、正式政策条款和编制标准数量。数据量为零时禁止声称已经使用对应知识。
    当前部署的共享政策连接对象是数据库 `hrr_feedback`、账号 `hrr_feedback`、schema `medical_report_kb`；密码只从 profile 指定的环境变量读取。`policy_catalog_entry` 是候选目录数据表，`medical_report_reader` 若存在也只是可选数据库角色名，不得把它解释为数据表或当前登录账号。不得把连接对象写死进报告正文。
-4. 正文阶段只从已验证的项目级 `数据包/数据库/knowledge.sqlite` 读取知识。`server_required` 连接失败不得降级；只有 `snapshot_required` 或明确允许旧快照的运行才可复用完整、未损坏且权限匹配的快照。
-5. 读取用户指定的全部材料和已有中间产物，不依赖当前对话记忆；识别当前阶段并复用已经确认的产物。
-6. 在项目目录内建立或复用独立工作台；不得搬移、覆盖或修改原始材料。
-7. 锁定正式项目名称、文档类型、范围最高依据、核心验收目标、未知事项处理方式和目标交付格式。缺失时先形成任务书和少量实质性问题，不直接声称形成正式报告。
-8. 存在公司标准方案和标准清单时，先构建位于项目外部的受审知识包；不得把公司原文、客户材料或知识包提交到公开 Skill 仓库。
+5. 正文阶段只从已验证的项目级 `数据包/数据库/knowledge.sqlite` 读取知识。共享本地文件和远程查询都只负责同步，不得成为正文阶段的旁路。已有项目固定同步时的发布 ID 与内容哈希；共享包更新不得静默改变在制项目。
+6. 读取用户指定的全部材料和已有中间产物，不依赖当前对话记忆；识别当前阶段并复用已经确认的产物。
+7. 在项目目录内建立或复用独立工作台；不得搬移、覆盖或修改原始材料。
+8. 锁定正式项目名称、文档类型、范围最高依据、核心验收目标、未知事项处理方式和目标交付格式。缺失时先形成任务书和少量实质性问题，不直接声称形成正式报告。
+9. 存在公司标准方案和标准清单时，先构建位于项目外部的受审知识包；不得把公司原文、客户材料或知识包提交到公开 Skill 仓库。
 
 复制 `assets/project-workbench-template/` 作为新项目工作台起点。项目已有目录结构时，只复制需要的模板，不强制改名或搬迁。
 
@@ -35,6 +36,7 @@ description: Create evidence-based Chinese government-investment medical informa
 - 识别地方编制标准、提取Word格式画像或处理缩进时，读取 `references/document-profile-rules.md`。
 - 建库、迁移或解释数据对象时，读取 `references/knowledge-base-schema.md`。
 - 解析 profile、诊断服务器、选择知识包、同步或验证快照时，读取 `references/knowledge-connection-rules.md`。
+- 构建、安装、查询、更新或向项目同步拆分本地 SQLite 知识包时，同时读取 `references/local-knowledge-package-rules.md`；不得把目录候选当成正式政策证据，也不得静默升级在制项目。
 - 通过团队远程只读MCP激活、检索或同步知识时，同时读取`references/remote-readonly-knowledge-mcp-rules.md`；不得向用户索取数据库密码，也不得把远程服务用于传输客户项目材料。
 - 处理客户清单、公司能力清单或投资对应关系时，读取 `references/scope-mapping-rules.md`。
 - 从公司标准 Word 构建、发布或同步标准知识包时，读取 `references/reference-corpus-cleaning-rules.md` 的标准方案专用规则；标准方案执行完整导入，不得套用参考语料的最短字数过滤或去重规则。
@@ -115,6 +117,12 @@ python scripts/knowledge_doctor.py --project-root <target-dir> --profile default
 python scripts/provision_postgres_runtime_reader.py --database <database> --user <admin-user> --schema <schema> --output reader-plan.json  # 默认 dry-run；apply 需管理员明确批准
 python scripts/run_project_pipeline.py <target-dir> --project-code <project-code> [--official-name <name>] [--owner-name <name>] [--knowledge-profile default] [--knowledge-mode <mode>] [--standard-knowledge-pack <reviewed-pack.json>] [--word-template <confirmed-template.docx>] --output pipeline-result.json
 python scripts/query_local_knowledge.py <target-dir>/数据包/数据库/knowledge.sqlite corpus --package-id <package-id> --section-role construction_content --search <keyword> --output local-knowledge-query.json
+python scripts/local_knowledge_packages.py build-standard <reviewed-standard-pack.json> <candidate-standard-knowledge.sqlite> --release-version <version>
+python scripts/local_knowledge_packages.py build-policy <candidate-policy-knowledge.sqlite> --release-version <version> [--catalog <policy-catalog.json>] [--verified-policies <verified-policies.json>] [--document-standards <document-standards.json>]
+python scripts/local_knowledge_packages.py status [--config <medical-report-local-kb.json>]
+python scripts/local_knowledge_packages.py query <corpus|capability|policy-catalog|policy-clause|document-standard> [--config <medical-report-local-kb.json>] [filters]
+python scripts/local_knowledge_packages.py install <standard|policy> <candidate.sqlite> --expected-sha256 <sha256> [--config <medical-report-local-kb.json>]
+python scripts/local_knowledge_packages.py sync-project <target-dir>/数据包/数据库/knowledge.sqlite <project-code> [--config <medical-report-local-kb.json>]
 python scripts/inventory_sources.py <paths...> --output 01-资料清单.json
 python scripts/classify_source_roles.py source-inventory.json [--overrides source-role-overrides.json] --output source-role-register.json
 python scripts/extract_docx_structure.py <report.docx> --output docx-structure.json

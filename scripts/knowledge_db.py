@@ -78,6 +78,22 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(db_path: Path) -> sqlite3.Connection:
+    """Open an existing SQLite database without creating files or applying writes."""
+    resolved = db_path.expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"knowledge database not found: {resolved}")
+    conn = sqlite3.connect(
+        f"file:{resolved.as_posix()}?mode=ro",
+        uri=True,
+        factory=ManagedConnection,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 def migration_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "assets" / "knowledge-base" / "migrations"
 

@@ -29,11 +29,51 @@ class SnapshotForeignKeyMigrationTests(unittest.TestCase):
             with connect(database) as connection:
                 completed = apply_migrations(connection)
                 self.assertIn("018_repair_snapshot_item_foreign_key", completed)
+                self.assertIn("019_document_standard_snapshot", completed)
                 self.assertEqual(
                     self.foreign_key_target(connection),
                     "shared_knowledge_snapshot",
                 )
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+                project_id = upsert_project(
+                    connection,
+                    {"project_code": "DOCUMENT-STANDARD", "official_name": "编制标准快照测试"},
+                )
+                connection.execute(
+                    """
+                    INSERT INTO shared_knowledge_snapshot (
+                      snapshot_id,project_id,source_type,source_id,content_hash,
+                      server_schema,snapshot_status,fetched_at,metadata_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "SNAPSHOT-DOCSTD",
+                        project_id,
+                        "document_standard",
+                        "DOCSTD-RELEASE",
+                        "c" * 64,
+                        "local_shared_sqlite",
+                        "current",
+                        now_iso(),
+                        dump_json({"sync_completed": True}),
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO shared_knowledge_snapshot_item (
+                      snapshot_id,item_type,item_id,item_hash,payload_json
+                    ) VALUES (?,?,?,?,?)
+                    """,
+                    (
+                        "SNAPSHOT-DOCSTD",
+                        "document_standard",
+                        "DOCSTD-TEST",
+                        "d" * 64,
+                        dump_json({"standard_id": "DOCSTD-TEST"}),
+                    ),
+                )
+                connection.commit()
 
     def test_legacy_broken_foreign_key_is_repaired_without_data_loss(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -41,7 +81,7 @@ class SnapshotForeignKeyMigrationTests(unittest.TestCase):
             legacy_migrations = root / "legacy-migrations"
             legacy_migrations.mkdir()
             for migration in sorted(MIGRATIONS.glob("*.sql")):
-                if migration.name.startswith("018_"):
+                if migration.name.startswith(("018_", "019_")):
                     continue
                 shutil.copy2(migration, legacy_migrations / migration.name)
 
@@ -97,6 +137,7 @@ class SnapshotForeignKeyMigrationTests(unittest.TestCase):
                 completed = apply_migrations(connection)
 
                 self.assertIn("018_repair_snapshot_item_foreign_key", completed)
+                self.assertIn("019_document_standard_snapshot", completed)
                 self.assertEqual(
                     self.foreign_key_target(connection),
                     "shared_knowledge_snapshot",

@@ -77,6 +77,9 @@ def _validate_item(item: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     elif kind == "policy_clause":
         if str(payload.get("text_hash") or "") != item["item_hash"]:
             return payload, "policy clause hash mismatch"
+    elif kind == "document_standard":
+        if sha256_text(dump_json(payload)) != item["item_hash"]:
+            return payload, "document standard payload hash mismatch"
     return payload, None
 
 
@@ -185,6 +188,11 @@ def validate_snapshots(
                 reasons.append("policy catalog snapshot has zero records")
             elif row["source_type"] == "policy_release" and counts.get("policy_clause", 0) < 1:
                 reasons.append("policy release snapshot has zero clauses")
+            elif (
+                row["source_type"] == "document_standard"
+                and counts.get("document_standard", 0) < 1
+            ):
+                reasons.append("document standard snapshot has zero records")
             permission = _permission_scope(conn, row, metadata)
             allowed = permissions.get(row["source_type"], [])
             if allowed and permission not in allowed:
@@ -235,6 +243,9 @@ def validate_snapshots(
         "capabilities": sum(item["counts"].get("product_capability", 0) for item in valid),
         "catalog_records": sum(item["counts"].get("policy_catalog_entry", 0) for item in valid),
         "policy_clauses": sum(item["counts"].get("policy_clause", 0) for item in valid),
+        "document_standards": sum(
+            item["counts"].get("document_standard", 0) for item in valid
+        ),
     }
     return {
         "status": "valid",

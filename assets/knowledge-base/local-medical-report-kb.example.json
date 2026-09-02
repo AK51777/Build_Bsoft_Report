@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "packages": {
+    "standard": {
+      "path": "../knowledge/medical-report/standard-knowledge.sqlite",
+      "max_age_days": 45,
+      "required": true
+    },
+    "policy": {
+      "path": "../knowledge/medical-report/policy-knowledge.sqlite",
+      "max_age_days": 8,
+      "required": true
+    }
+  }
+}
