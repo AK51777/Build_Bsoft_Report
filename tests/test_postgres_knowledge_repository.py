@@ -16,7 +16,10 @@ sys.path.insert(0, str(SCRIPTS))
 from build_policy_catalog import build_catalog  # noqa: E402
 from import_verified_policies_postgres import validate_policies  # noqa: E402
 from import_policy_catalog_postgres import normalize_catalog, validate_catalog  # noqa: E402
-from import_standard_knowledge_pack_postgres import retire_superseded_packages  # noqa: E402
+from import_standard_knowledge_pack_postgres import (  # noqa: E402
+    delete_existing_document_blocks,
+    retire_superseded_packages,
+)
 from postgres_knowledge_db import (  # noqa: E402
     migration_dir,
     migration_hash_is_accepted,
@@ -327,6 +330,24 @@ class PostgresKnowledgeRepositoryTests(unittest.TestCase):
         self.assertIn("package_status='retired'", cursor.statement)
         self.assertIn("source_role='standard_solution'", cursor.statement)
         self.assertEqual(cursor.params, ("PACK-NEW", "SOURCE-SOLUTION"))
+
+    def test_rebuilt_document_replaces_old_blocks_before_insert(self) -> None:
+        class Cursor:
+            rowcount = 2364
+
+            def execute(self, statement, params):
+                self.statement = statement
+                self.params = params
+
+        cursor = Cursor()
+        count = delete_existing_document_blocks(
+            cursor,
+            schema="medical_report_kb",
+            corpus_document_id="STDDOC-STABLE",
+        )
+        self.assertEqual(count, 2364)
+        self.assertIn("DELETE FROM medical_report_kb.corpus_block", cursor.statement)
+        self.assertEqual(cursor.params, ("STDDOC-STABLE",))
 
     def test_reviewed_standard_pack_does_not_retire_published_family(self) -> None:
         class Cursor:

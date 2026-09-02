@@ -80,6 +80,8 @@
 
 | DEV-065 | PostgreSQL 010迁移在既有运行视图中间插入完整性字段时被识别为重命名旧列并回滚 | P0 | 共享知识迁移 | A | 生产单事务执行报错`cannot change name of view column source_location to source_section_id`，迁移与登记均未落库 | 010未保持`runtime_corpus_block`既有列顺序，将三个新增列插入`block_index`之后 | 处理中 | `20260831-DEV-065-postgres-010-view-column-order` | 新字段改为追加到运行视图末尾，并补充列顺序回归后重新执行生产迁移 |
 
+| DEV-066 | 同一标准Word重建后文档ID保持稳定但块ID与块序号变化，PostgreSQL导入器无法原子替换旧块 | P0 | 标准知识包发布 | A | 生产发布事务报错`duplicate key value violates unique constraint corpus_block_corpus_document_id_block_index_key`并整体回滚 | 导入器更新稳定文档ID归属后直接插入新块，未先删除该文档的旧块及级联关系 | 处理中 | `20260831-DEV-066-rebuilt-document-block-replacement` | 在同一事务内先按文档ID删除旧块，依赖外键级联清理旧关系，再写入新块与新能力关系；补充替换计数和真实PostgreSQL升级回归 |
+
 ## 新问题模板
 
 | ID | 问题描述 | 严重程度 | 模块 | 分类 | 证据 | 唯一根因假设 | 状态 | 关联测试/run_id | 处理结论 |

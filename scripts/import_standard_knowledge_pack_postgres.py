@@ -13,7 +13,7 @@ from knowledge_db import load_json, now_iso, sha256_text, stable_id
 from postgres_knowledge_db import add_connection_arguments, apply_migrations, canonical_json, connect, jsonb, validate_schema
 
 
-IMPORTER_VERSION = "knowledge-pack-postgres-v2"
+IMPORTER_VERSION = "knowledge-pack-postgres-v3"
 
 
 def source_type(file_name: str) -> str:
@@ -62,6 +62,20 @@ def retire_superseded_packages(
           )
         """,
         parameters,
+    )
+    return cursor.rowcount
+
+
+def delete_existing_document_blocks(
+    cursor,
+    *,
+    schema: str,
+    corpus_document_id: str,
+) -> int:
+    validate_schema(schema)
+    cursor.execute(
+        f"DELETE FROM {schema}.corpus_block WHERE corpus_document_id=%s",
+        (corpus_document_id,),
     )
     return cursor.rowcount
 
@@ -192,6 +206,11 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
                 package_id,
                 jsonb({"source_sections": corpus.get("source_sections", [])}),
             ),
+        )
+        replaced_corpus_block_count = delete_existing_document_blocks(
+            cursor,
+            schema=schema,
+            corpus_document_id=corpus["document_id"],
         )
         block_rows = []
         for block_index, block in enumerate(corpus["blocks"], 1):
@@ -327,6 +346,7 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
                 relation_rows,
             )
         row_counts = {
+            "replaced_corpus_blocks": replaced_corpus_block_count,
             "corpus_blocks": len(corpus["blocks"]),
             "approved_corpus_blocks": sum(
                 block.get("review_status") == "approved" for block in corpus["blocks"]
@@ -351,6 +371,7 @@ def import_pack(connection, payload: dict[str, Any], *, publish: bool, schema: s
         "package_status": package_status,
         "package_content_hash": package_hash,
         "blocks_imported": len(corpus["blocks"]),
+        "blocks_replaced": replaced_corpus_block_count,
         "blocks_published": row_counts["approved_corpus_blocks"] if publish else 0,
         "blocks_prohibited": len(corpus["blocks"]) - row_counts["approved_corpus_blocks"],
         "capabilities_imported": len(payload["capabilities"]),
