@@ -18,6 +18,16 @@
 
 完成正文采集后仍须逐文件核对正式名称、文号、发布机关、发布日期、最终官方URL、效力和替代关系，再切分必要条款，填写审慎摘要、用途许可、禁用主张、主题和适用对象。只有经受控复核生成的 payload 才可交给 `import_verified_policies_postgres.py --publish`；禁止把采集文本整篇自动切一条、批量标记为 `verified` 或直接复制为 `policy_document` / `policy_clause`。
 
+采集完成后先运行 `build_policy_source_review_workpack.py`，从指定目录的最新采集视图只读生成 JSON、CSV 和 Markdown 复核工作包。工作包输入签名必须覆盖目录内容哈希以及每条记录的目录行哈希、采集ID、最终URL、抓取状态、内容就绪状态、身份状态、原文哈希、提取文本哈希和当前审核状态；任一项变化即生成新的复核运行ID，旧工作包不得继续回写。
+
+复核队列使用固定优先级：身份完全匹配文本 → 部分匹配 → 身份不一致 → 无法自动判断 → 二进制提取 → URL重校验 → 网络重试 → 人工补源 → 其他采集重试 → 未采集 → 非正式资料排除 → 非活动目录排除 → 已有人工状态复查。`draft_or_internal`、`reference_only` 和非活动目录项必须优先进入排除队列，不得因已经抓到正文而升级为正式候选。所有导出行的 `formal_publish_eligible` 固定为 `false`，人工模板的 `verification_status` 固定为 `unverified` 且条款列表为空；该脚本不得生成 `import_verified_policies_postgres.py` 可直接发布的载荷。
+
+```text
+MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/build_policy_source_review_workpack.py --catalog-id <catalog-id> --output-json <review.json> [--output-csv <review.csv>] [--output-md <review.md>] --host 127.0.0.1 --port <tunnel-port> --database <database> --user <user>
+```
+
+默认工作包只保存提取文本长度、哈希和有界预览；仅在受控私有目录人工复核时显式使用 `--include-extracted-text`。数据库事务必须只读，输出不得放入公开 Skill 仓库。
+
 ## 2. 进入依据的最低条件
 
 1. 正式名称、文号、发布单位和发布日期已核验；原文没有文号时明确为空，不编造。
