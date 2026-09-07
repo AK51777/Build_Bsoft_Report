@@ -28,6 +28,8 @@ MEDICAL_FEASIBILITY_DB_PASSWORD=<password> python scripts/build_policy_source_re
 
 默认工作包只保存提取文本长度、哈希和有界预览；仅在受控私有目录人工复核时显式使用 `--include-extracted-text`。数据库事务必须只读，输出不得放入公开 Skill 仓库。
 
+人工决定与采集原件分开保存。决定文件绑定 `review_run_id`、`input_signature` 和逐条 `catalog_entry_id`；AI预审保持 `decision=pending`，不得代填审阅人或人工确认。完成来源身份、官方来源、使用许可、效力及逐条摘录复核后，使用 `build_verified_policy_payload.py <最新完整工作包.json> <人工决定.json> --output <候选正式载荷.json>`。编译器仅接受显式批准记录，复核输入签名、完整原文哈希、文件身份、原文逐字摘录和章节用途；不连接数据库、不自动发布。URL修正应重新采集，不可在决定文件里绕过原文签名。候选载荷仍须生产冲突预检：相同内容不重写，有差异先确认，再执行受授权发布。
+
 ## 2. 进入依据的最低条件
 
 1. 正式名称、文号、发布单位和发布日期已核验；原文没有文号时明确为空，不编造。

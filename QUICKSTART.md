@@ -5,12 +5,29 @@
 使用 Codex 内置文档运行环境或 Python 3.10 以上版本：
 
 ```powershell
-python scripts/check_dependencies.py --knowledge-mode server_required --output dependency-check.json
+python scripts/check_dependencies.py --knowledge-mode snapshot_required --output dependency-check.json
 ```
 
 `core.ready=true` 表示本地 SQLite 主链可运行。`word.candidate_generation_ready=true` 只表示可以生成 DOCX；只有实际渲染并逐页检查后，Word 才达到视觉交付状态。
 
 ## 2. 配置一次用户级共享知识
+
+### 推荐：本地双 SQLite，无需授权码
+
+将受审的 `standard-knowledge.sqlite`、`policy-knowledge.sqlite` 放在固定的项目外目录，例如 `D:\private-kb\medical-report`。从发布方取得对应的两个可信 SHA-256（不要用自己对未知文件计算的值代替发布摘要），然后在本 Skill 源码目录运行：
+
+```powershell
+python scripts/local_knowledge_bootstrap.py D:\private-kb\medical-report `
+  --standard-sha256 "<发布方提供的标准包SHA-256>" `
+  --policy-sha256 "<发布方提供的政策包SHA-256>"
+python scripts/local_knowledge_packages.py status
+```
+
+脚本校验文件及实际内容后创建 `%USERPROFILE%\.codex\config\medical-report-local-kb.json`；已有相同配置不重复修改，已有不同配置会拒绝覆盖。它只引用原文件，不复制知识、不配置数据库、不需要 Token。其他 AI 工具可通过相同 Python 入口调用；自定义配置用环境变量 `MEDICAL_REPORT_LOCAL_KB_CONFIG` 或流水线 `--local-knowledge-config <配置路径>`。
+
+远程 MCP 完整保留，不必为启用本地知识删除它。看到 `formal_policy_clauses_empty` 表示包可读取但正式政策条款仍为空，不能据此生成正式政策依据。详细契约见 `references/local-knowledge-package-rules.md`。
+
+### 可选：显式使用远程共享知识
 
 把 `assets/knowledge-base/medical-report-kb.example.json` 复制到：
 
@@ -41,7 +58,6 @@ python scripts/run_project_pipeline.py D:\projects\hospital-a `
   --owner-name "某医院" `
   --jurisdiction-code 100000 `
   --jurisdiction-name "某地区" `
-  --knowledge-profile default `
   --word-template D:\templates\已确认可研格式模板.docx `
   --output D:\projects\hospital-a\运行记录\pipeline-result.json
 ```
@@ -52,9 +68,11 @@ python scripts/run_project_pipeline.py D:\projects\hospital-a `
 
 建议把参考可研、厂商方案、政策线索和 Word 模板使用明显文件名或子目录隔开。系统会生成 `source-role-register.json`；如分类不准确，在 `project-config.json` 的 `source_roles.overrides` 中按相对路径或通配符显式指定角色后重跑。
 
-流水线会自动诊断用户级 profile、从唯一适用的发布知识包和政策目录同步到项目 SQLite，再从本地快照生成章节。多个候选时会列出候选并阻断，不会默认取最新或全部。
+使用本地配置时，流水线会自动校验两个共享包、在单一事务内同步新项目，再从项目快照生成章节。失败时全部回滚，不静默连接远程；已有项目保留固定快照，共享包更新不会自动改写在制项目。准备结果见 `运行记录/local-knowledge-preparation.json`。
 
-没有服务器时，必须显式选择 `offline_pack`，再提供受审知识包：
+显式远程调用时在上述命令增加 `--knowledge-profile default`：流水线诊断该 profile，从唯一适用的发布包和政策目录同步。多个候选时列出候选并阻断，不默认取最新或全部。项目明确配置的离线、禁用或快照模式优先于本地自动发现。
+
+如果没有服务器且尚未采用本地双 SQLite，也可显式选择 `offline_pack`，再提供受审 JSON 知识包：
 
 ```powershell
 python scripts/run_project_pipeline.py D:\projects\hospital-a `

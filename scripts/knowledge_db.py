@@ -7,6 +7,8 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -22,6 +24,67 @@ STATUS_MAP = {
     "【仅作参考】": "reference_only",
     "【不适用】": "not_applicable",
 }
+
+
+_ATOMIC_CONNECTIONS: ContextVar[dict] = ContextVar("medical_atomic_connections", default={})
+
+
+class _BorrowedConnection:
+    """A nested importer cannot commit or close the owning transaction."""
+
+    def __init__(self, connection):
+        self.connection = connection
+        self.rollback_only = False
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None:
+            self.rollback_only = True
+        return False
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+    def rollback(self):
+        self.rollback_only = True
+
+    def executescript(self, sql):
+        raise RuntimeError("schema scripts are not allowed inside an atomic import")
+
+
+@contextmanager
+def atomic_database(database: Path):
+    """Share one transaction across existing path-based importers.
+
+    Targets must already be initialized at the current schema. Migrations have
+    their own commit semantics and must never escape this transaction boundary.
+    """
+    path = database.expanduser().resolve()
+    key = str(path)
+    if key in _ATOMIC_CONNECTIONS.get():
+        raise RuntimeError("nested atomic_database scopes are not supported")
+    connection = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, factory=ManagedConnection)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        borrowed = _BorrowedConnection(connection)
+        token = _ATOMIC_CONNECTIONS.set({**_ATOMIC_CONNECTIONS.get(), key: borrowed})
+        try:
+            apply_migrations(borrowed)
+            yield borrowed
+            if borrowed.rollback_only:
+                raise RuntimeError("atomic import was marked for rollback")
+        finally:
+            _ATOMIC_CONNECTIONS.reset(token)
 
 
 class ManagedConnection(sqlite3.Connection):
@@ -70,6 +133,9 @@ def dump_json(value: Any) -> str:
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
+    borrowed = _ATOMIC_CONNECTIONS.get().get(str(db_path.expanduser().resolve()))
+    if borrowed is not None:
+        return borrowed
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, factory=ManagedConnection)
     conn.row_factory = sqlite3.Row
@@ -100,6 +166,15 @@ def migration_dir() -> Path:
 
 def apply_migrations(conn: sqlite3.Connection, migrations: Path | None = None) -> list[str]:
     migrations = migrations or migration_dir()
+    if isinstance(conn, _BorrowedConnection):
+        applied = {
+            row["version"]: row["file_hash"]
+            for row in conn.execute("SELECT version,file_hash FROM kb_schema_migration")
+        }
+        for path in sorted(migrations.glob("*.sql")):
+            if applied.get(path.stem) != sha256_text(path.read_text(encoding="utf-8")):
+                raise RuntimeError("project schema requires migration before atomic import: " + path.stem)
+        return []
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS kb_schema_migration (

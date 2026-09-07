@@ -41,6 +41,7 @@ from knowledge_profile import (
     resolve_knowledge_settings,
 )
 from knowledge_snapshot import KnowledgeSnapshotError, validate_snapshots
+from local_knowledge_bootstrap import discover_local_config, prepare_project_knowledge
 from map_scope_capabilities import map_capabilities
 from match_document_standards import (
     MATCHER_VERSION as DOCUMENT_STANDARD_MATCHER_VERSION,
@@ -396,6 +397,7 @@ def run_pipeline(
     knowledge_config_path: Path | None = None,
     knowledge_profile: str | None = None,
     knowledge_mode: str | None = None,
+    local_knowledge_config_path: Path | None = None,
     generate_working_drafts: bool = True,
 ) -> dict:
     initialized = initialize_project(
@@ -420,6 +422,35 @@ def run_pipeline(
     processed = {"clean_documents": [], "scope_workbooks": [], "restricted_references": []}
     knowledge_results = []
     policy_catalog_results = []
+
+    local_preparation = {}
+    explicit_remote_or_mode = bool(knowledge_config_path or knowledge_profile or knowledge_mode)
+    # server_required is the initializer default. Preserve deliberately configured
+    # offline/disabled/snapshot modes and an explicit opt-out from local discovery.
+    project_knowledge = config.get("knowledge", {})
+    auto_local_allowed = (
+        project_knowledge.get("mode", "server_required") == "server_required"
+        and project_knowledge.get("prefer_local_packages", True)
+    )
+    local_path = (
+        discover_local_config(local_knowledge_config_path)
+        if local_knowledge_config_path is not None or
+        (not explicit_remote_or_mode and auto_local_allowed) else None
+    )
+    if local_path is not None:
+        if knowledge_config_path or knowledge_profile or knowledge_mode not in (None, "snapshot_required"):
+            raise ValueError("local knowledge config conflicts with explicit remote/offline/disabled settings")
+        knowledge_mode = "snapshot_required"
+        try:
+            local_preparation = prepare_project_knowledge(
+                local_path, database, project_code, selection=config.get("knowledge", {}),
+            )
+            write_json(logs_dir / "local-knowledge-preparation.json", local_preparation)
+        except Exception as exc:
+            blockers.append({
+                "stage": "S0_KNOWLEDGE", "reason": "local_knowledge_preparation_failed",
+                "required_action": str(exc),
+            })
 
     configured_mode = str(
         knowledge_mode or config.get("knowledge", {}).get("mode") or "server_required"
@@ -451,12 +482,19 @@ def run_pipeline(
     server_sync_result: dict = {"enabled": False, "status": "not_requested"}
     doctor_result: dict = {}
     try:
-        knowledge_settings = resolve_knowledge_settings(
+        knowledge_settings = ({
+            "mode": "snapshot_required", "profile_name": "local-split-packages",
+            "config_path": str(local_path), "config_source": "local_split_packages",
+            "package_ids": local_preparation.get("manifest", {}).get("package_ids", []),
+            "catalog_ids": local_preparation.get("manifest", {}).get("catalog_ids", []),
+            "permission_scopes": config.get("knowledge", {}).get("permission_scopes", {}),
+            "allow_stale_cache": False,
+        } if local_path is not None else resolve_knowledge_settings(
             config,
             explicit_config_path=knowledge_config_path,
             explicit_profile=knowledge_profile,
             explicit_mode=knowledge_mode,
-        )
+        ))
         write_json(logs_dir / "knowledge-profile.json", public_settings(knowledge_settings))
     except KnowledgeConfigurationError as exc:
         doctor_result = {
@@ -584,6 +622,8 @@ def run_pipeline(
             )
             knowledge_manifest["source"] = "local_sqlite_snapshot"
             knowledge_manifest["connection_status"] = "not_required"
+            if local_preparation:
+                knowledge_manifest["local_preparation"] = local_preparation
             server_sync_result = {"enabled": False, "status": "local_snapshot"}
         except KnowledgeSnapshotError as exc:
             blockers.append(
@@ -1501,6 +1541,7 @@ def main() -> int:
     parser.add_argument("--policy-catalog", type=Path, action="append", default=[])
     parser.add_argument("--knowledge-config", type=Path)
     parser.add_argument("--knowledge-profile")
+    parser.add_argument("--local-knowledge-config", type=Path)
     parser.add_argument(
         "--knowledge-mode",
         choices=("server_required", "snapshot_required", "offline_pack", "disabled"),
@@ -1527,6 +1568,7 @@ def main() -> int:
         knowledge_config_path=args.knowledge_config,
         knowledge_profile=args.knowledge_profile,
         knowledge_mode=args.knowledge_mode,
+        local_knowledge_config_path=args.local_knowledge_config,
         generate_working_drafts=not args.no_generate_working_drafts,
     )
     text = json.dumps(result, ensure_ascii=False, indent=2)

@@ -26,7 +26,7 @@ from validate_section_draft import assess_content, visible_length  # noqa: E402
 
 
 class EvidenceBoundDraftQualityTests(unittest.TestCase):
-    def test_minimum_length_guard_uses_validator_visible_length(self) -> None:
+    def test_missing_content_remains_a_validation_gap_instead_of_padding(self) -> None:
         lines = ensure_minimum_length(
             ["## 项目基本情况", "", "已有项目事实。", ""],
             {"official_name": "测试医院信息化建设项目"},
@@ -38,7 +38,16 @@ class EvidenceBoundDraftQualityTests(unittest.TestCase):
             },
             [{"standard_name": "门诊业务系统"}, {"standard_name": "数据治理平台"}],
         )
-        self.assertGreaterEqual(visible_length("\n".join(lines)), 580)
+        content = "\n".join(lines)
+        self.assertLess(visible_length(content), 500)
+        assessment = assess_content(content, {"chapter_code": "1.1.1", "length_min": 500}, [], mode="working")
+        self.assertIn("section_too_short", {issue["code"] for issue in assessment["issues"]})
+
+    def test_construction_content_is_never_padded_or_changed(self) -> None:
+        original = ["## 业务应用系统建设", "", "<!-- corpus-block id=BLOCK-TEST -->", "经确认的标准正文。", ""]
+        for minimum in (0, 100, 10000):
+            plan = {"chapter_code": "5.1.1", "section_role": "construction_content", "length_min": minimum}
+            self.assertEqual(ensure_minimum_length(original.copy(), {}, plan, []), original)
 
     def test_generic_chapter_has_project_specific_structure_without_template_residue(self) -> None:
         project = {"official_name": "测试医院信息化建设项目"}

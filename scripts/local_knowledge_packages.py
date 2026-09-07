@@ -22,6 +22,7 @@ from ingest_document_standards import ingest as ingest_document_standards
 from ingest_policies import ingest as ingest_policies
 from knowledge_db import (
     apply_migrations,
+    atomic_database,
     connect,
     connect_readonly,
     dump_json,
@@ -32,6 +33,7 @@ from knowledge_db import (
     stable_id,
 )
 from knowledge_snapshot import validate_snapshots
+from local_knowledge_integrity import validate_sql_payload
 from query_local_knowledge import query_local
 from sync_postgres_knowledge_snapshot import record_snapshot
 
@@ -391,6 +393,10 @@ def validate_local_package(database: Path, *, expected_kind: str | None = None) 
             for key in ("catalog_records", "verified_policy_clauses", "verified_document_standards")
         ):
             raise LocalKnowledgeError("policy package has no usable catalog, clauses, or standards")
+    try:
+        validate_sql_payload(database, payloads)
+    except (ValueError, sqlite3.DatabaseError) as exc:
+        raise LocalKnowledgeError(str(exc)) from exc
     return {
         "status": "valid",
         "database": str(database),
@@ -697,6 +703,16 @@ def sync_to_project(
     *,
     project_database: Path,
     project_code: str,
+    validation_selection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    with atomic_database(project_database):
+        return _sync_to_project(config, project_database=project_database, project_code=project_code,
+                                validation_selection=validation_selection)
+
+
+def _sync_to_project(
+    config: dict[str, Any], *, project_database: Path, project_code: str,
+    validation_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     project_database = project_database.expanduser().resolve()
     standard_status = validate_local_package(config["packages"]["standard"]["path"], expected_kind="standard")
@@ -846,11 +862,13 @@ def sync_to_project(
             **standard_basis_import,
             "snapshot_id": document_standard_snapshot,
         }
+    selection = validation_selection or {}
     validation = validate_snapshots(
         project_database,
         project_code,
-        package_ids=[standard_pack["package_id"]],
-        catalog_ids=catalog_ids,
+        package_ids=selection.get("package_ids") or [standard_pack["package_id"]],
+        catalog_ids=selection.get("catalog_ids") or catalog_ids,
+        permission_scopes=selection.get("permission_scopes", {}),
         allow_stale=False,
     )
     return {

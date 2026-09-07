@@ -14,7 +14,7 @@ description: Create evidence-based Chinese government-investment medical informa
 ## 开始前
 
 1. 读取 `references/knowledge-connection-rules.md` 和 `references/local-knowledge-package-rules.md`。若用户级本地知识配置或 `MEDICAL_REPORT_LOCAL_KB_CONFIG` 存在，先运行 `local_knowledge_packages.py status`；两个包有效时优先用本地包同步项目快照。配置存在但必需包缺失或损坏时阻断，不得静默换用远程数据。
-2. 本地路径固定使用 `standard-knowledge.sqlite` 和 `policy-knowledge.sqlite`，先运行 `sync-project` 写入项目 SQLite，再以 `snapshot_required` 生成。远程只读 MCP 继续保留；用户显式选择远程或未配置本地包时，若环境提供`knowledge_access_status`，检查激活状态并按需调用`activate_knowledge_access`或`knowledge_service_status`，不得回显或记录激活码。否则解析`knowledge.mode`和用户级profile；不得要求每个新项目重复填写数据库主机、端口、库名和用户。
+2. 本地路径固定使用 `standard-knowledge.sqlite` 和 `policy-knowledge.sqlite`。新设备先用 `local_knowledge_bootstrap.py` 校验发布方提供的两个 SHA-256 并一次配置；统一入口 `run_project_pipeline.py` 自动发现本地配置、原子同步新项目并以 `snapshot_required` 生成。已有项目保留已固定快照；显式远程参数和项目已有离线/禁用/快照模式不被自动路由覆盖，优先级见本地知识规则。独立阶段可使用 `sync-project`。远程只读 MCP 继续保留；用户显式选择远程或未配置本地包时，若环境提供`knowledge_access_status`，检查激活状态并按需调用`activate_knowledge_access`或`knowledge_service_status`，不得回显或记录激活码。否则解析`knowledge.mode`和用户级profile；不得要求每个新项目重复填写数据库主机、端口、库名和用户。
 3. `server_required`必须先运行知识诊断并从发布运行视图同步。远程只读路径先用`knowledge_query`明确选择package/catalog ID，再运行`sync_remote_knowledge_snapshot.py`写入项目SQLite并验证快照；不得在正文阶段直接以远程查询结果替代项目快照。`snapshot_required`必须验证本地快照；`offline_pack`必须导入受审离线包；`disabled`必须明确记录未使用共享知识。任一知识门禁失败时在S0阻断。
 4. 同步或验证后报告 profile、连接状态、使用来源、package/catalog IDs、发布 ID、版本、内容哈希、同步时间、权限范围及语料、能力、目录、正式政策条款和编制标准数量。数据量为零时禁止声称已经使用对应知识。
    当前部署的共享政策连接对象是数据库 `hrr_feedback`、账号 `hrr_feedback`、schema `medical_report_kb`；密码只从 profile 指定的环境变量读取。`policy_catalog_entry` 是候选目录数据表，`medical_report_reader` 若存在也只是可选数据库角色名，不得把它解释为数据表或当前登录账号。不得把连接对象写死进报告正文。

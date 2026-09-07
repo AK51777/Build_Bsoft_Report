@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from docx import Document
@@ -16,7 +17,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from build_standard_knowledge_pack import build_pack  # noqa: E402
 from init_project_workbench import initialize_project  # noqa: E402
-from knowledge_db import sha256_file, sha256_text  # noqa: E402
+from knowledge_db import connect, sha256_file, sha256_text  # noqa: E402
 from local_knowledge_packages import (  # noqa: E402
     LocalKnowledgeError,
     build_policy_package,
@@ -26,6 +27,7 @@ from local_knowledge_packages import (  # noqa: E402
     package_status,
     query_packages,
     sync_to_project,
+    validate_local_package,
 )
 
 
@@ -135,6 +137,78 @@ def make_config(root: Path, standard: Path, policy: Path) -> Path:
 
 
 class LocalKnowledgePackageTests(unittest.TestCase):
+    def test_failed_sync_rolls_back_imports_and_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            standard, policy = root / "standard.sqlite", root / "policy.sqlite"
+            build_standard_package(make_standard_pack(root), standard, release_version="test")
+            catalog = root / "catalog.json"
+            write_json(catalog, policy_catalog())
+            build_policy_package(policy, release_version="test", catalog_path=catalog)
+            config = load_config(make_config(root, standard, policy))
+            initialized = initialize_project(root / "project", project_code="ATOMIC")
+            database = Path(initialized["database"])
+
+            def database_dump():
+                with connect(database) as conn:
+                    return list(conn.iterdump())
+
+            # Fail both between importers and after all writes, then safely retry.
+            for initially_synced in (False, True):
+                if initially_synced:
+                    sync_to_project(config, project_database=database, project_code="ATOMIC")
+                before = database_dump()
+                for failing in ("import_catalog", "record_snapshot", "validate_snapshots"):
+                    with self.subTest(existing=initially_synced, failing=failing):
+                        with patch("local_knowledge_packages." + failing, side_effect=RuntimeError("injected")):
+                            with self.assertRaisesRegex(RuntimeError, "injected"):
+                                sync_to_project(config, project_database=database, project_code="ATOMIC")
+                        self.assertEqual(database_dump(), before)
+            synced = sync_to_project(config, project_database=database, project_code="ATOMIC")
+            self.assertGreater(synced["snapshot_validation"]["counts"]["corpus_blocks"], 0)
+
+    def test_sql_edits_with_unchanged_counts_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database = root / "standard.sqlite"
+            build_standard_package(make_standard_pack(root), database, release_version="test")
+            before = sha256_file(database)
+            self.assertEqual(validate_local_package(database)["status"], "valid")
+            self.assertEqual(sha256_file(database), before)
+            for sql in (
+                "UPDATE corpus_block SET clean_text='changed'",
+                "UPDATE product_capability SET capability_description='changed'",
+                "UPDATE capability_solution_block_relation SET relation_order=relation_order+1",
+                "UPDATE corpus_document SET permission_scope='changed'",
+            ):
+                with self.subTest(sql=sql):
+                    with connect(database) as conn:
+                        conn.execute(sql)
+                        conn.commit()
+                    with self.assertRaisesRegex(LocalKnowledgeError, "SQL content mismatch"):
+                        validate_local_package(database)
+                    # Restore through the same reviewed importer, not from modified rows.
+                    from import_standard_knowledge_pack import import_pack
+                    import_pack(database, json.loads((root / "standard-pack.json").read_text(encoding="utf-8")))
+
+    def test_policy_metadata_and_standard_edits_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog, standards = root / "catalog.json", root / "standards.json"
+            write_json(catalog, policy_catalog())
+            write_json(standards, document_standards())
+            for sql in (
+                "UPDATE policy_catalog_entry SET external_url='https://invalid.example'",
+                "UPDATE document_standard SET required_sections_json='[]'",
+            ):
+                with self.subTest(sql=sql):
+                    database = root / (sha256_text(sql) + ".sqlite")
+                    build_policy_package(database, release_version="test", catalog_path=catalog, document_standards_path=standards)
+                    with connect(database) as conn:
+                        conn.execute(sql)
+                    with self.assertRaisesRegex(LocalKnowledgeError, "SQL content mismatch"):
+                        validate_local_package(database)
+
     def test_build_query_and_sync_split_packages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
