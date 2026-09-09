@@ -512,7 +512,25 @@ def add_markdown_table(
 
 
 def parse_table_row(line: str) -> list[str]:
-    return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+    value = line.strip()
+    if value.startswith("|"):
+        value = value[1:]
+    # Remove one outer delimiter, never the empty cells next to it.
+    if value.endswith("|"):
+        preceding = value[:-1]
+        backslashes = len(preceding) - len(preceding.rstrip("\\"))
+        if backslashes % 2 == 0:
+            value = preceding
+    cells, current, backslashes = [], [], 0
+    for char in value:
+        if char == "|" and backslashes % 2 == 0:
+            cells.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        backslashes = backslashes + 1 if char == "\\" else 0
+    cells.append("".join(current))
+    return [cell.strip().replace("\\|", "|") for cell in cells]
 
 
 def current_adopted_hash(conn, project_id: str) -> str:

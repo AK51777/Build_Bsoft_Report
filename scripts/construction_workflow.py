@@ -251,7 +251,17 @@ def confirm_and_generate(root, confirmation):
         proposal = copy.deepcopy(item["proposal"])
         override = override_map.get(item["scope_row_id"], {})
         if override:
-            proposal = {"scope_row_id": item["scope_row_id"], **{k:v for k,v in override.items() if k != "parent_path"}}
+            selection_fields = ("candidate_id", "capability_id", "root_heading_path")
+            if "candidate_id" in override or "capability_id" in override:
+                # A new selector must not inherit a competing selector or old root.
+                for field in selection_fields:
+                    proposal.pop(field, None)
+                if "decision" not in override:
+                    proposal["decision"] = "confirmed"
+            proposal.update({k: v for k, v in override.items() if k != "parent_path"})
+            if proposal.get("decision") == "confirmed_gap":
+                for field in selection_fields:
+                    proposal.pop(field, None)
             if "parent_path" in override:
                 next(e for e in hierarchy["items"] if e["scope_row_id"] == item["scope_row_id"])["parent_path"] = override["parent_path"]
         proposal.pop("choice_label", None)

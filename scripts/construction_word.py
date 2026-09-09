@@ -102,7 +102,7 @@ def audit_word(docx, manifest, semantic_styles=None):
                 tokens.append(["paragraph", text])
         elif element.tag == qn("w:tbl") and started:
             tokens.append(["table", [[c.text for c in row.cells] for row in Table(element, document).rows]])
-    expected = expected_tokens(construction_markdown(manifest))
+    expected = expected_document_tokens(manifest)
     mismatch = next((n for n, pair in enumerate(zip(expected, tokens)) if pair[0] != pair[1]), None)
     if mismatch is None and len(expected) != len(tokens):
         mismatch = min(len(expected), len(tokens))
@@ -112,6 +112,29 @@ def audit_word(docx, manifest, semantic_styles=None):
             "first_mismatch": mismatch, "numbering_errors": heading_errors,
             "expected_visible_hash": fingerprint(expected), "actual_visible_hash": fingerprint(tokens),
             "heading_tree_hash": manifest.get("heading_tree", {}).get("tree_hash", ""), "fidelity": fidelity(manifest)}
+
+
+def expected_document_tokens(manifest):
+    """Audit original table cells against the snapshot, not the renderer's parser."""
+    from construction_alignment import render_solution_fragment
+    scope = manifest["construction_list_import"]
+    payload = scope.get("original_display_payload", scope["display_payload"])
+    expected = [["heading", 1, "建设清单"]]
+
+    def display(value):
+        return str(value if value is not None else "").replace("\r\n", "\n")
+
+    for sheet in payload.get("sheets", []):
+        headers = [str(value) for value in sheet.get("headers", [])]
+        if not headers:
+            continue
+        expected.extend(expected_tokens(f"## {sheet.get('name', '')}"))
+        rows = [[display(header) for header in headers]]
+        rows.extend([[display(row.get(header, "")) for header in headers]
+                     for row in sheet.get("rows", [])])
+        expected.append(["table", rows])
+    expected.extend(expected_tokens(render_solution_fragment(manifest, 1, "第2章 建设内容")))
+    return expected
 
 
 def generate_word(database, manifest, output, project_name):
