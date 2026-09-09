@@ -686,9 +686,14 @@ def build_docx(
     database: Path | None = None,
     project_code: str = "",
     format_config: Path | None = None,
+    document_title: str = "可行性研究报告",
 ) -> dict[str, Any]:
     if mode not in {"working", "delivery"}:
         raise ValueError("mode must be working or delivery")
+    if not document_title.strip() or "\n" in document_title or "\r" in document_title:
+        raise ValueError("document_title must be a nonempty single-line title")
+    if mode == "delivery" and document_title != "可行性研究报告":
+        raise ValueError("specialist documents use the construction Word workflow, not full-report delivery mode")
     template, format_authority = resolve_format_authority(template, format_config)
     if template and not template.is_file():
         raise FileNotFoundError(template)
@@ -728,8 +733,8 @@ def build_docx(
         paragraph_properties = style.element.find(qn("w:pPr"))
         if paragraph_properties is not None and paragraph_properties.find(qn("w:numPr")) is not None:
             numbered_heading_levels.add(level)
-    document.core_properties.title = f"{project_name}可行性研究报告"
-    document.core_properties.subject = "医疗信息化政府投资项目可行性研究报告"
+    document.core_properties.title = f"{project_name}{document_title}"
+    document.core_properties.subject = f"医疗信息化{document_title}"
     document.core_properties.author = ""
     document.core_properties.last_modified_by = ""
     document.core_properties.comments = f"Layout source: {preset}. Template body and personal metadata were scrubbed."
@@ -741,7 +746,7 @@ def build_docx(
     set_run_font(title.add_run(project_name), "华文中宋", 22)
     subtitle = document.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    set_run_font(subtitle.add_run("可行性研究报告"), "华文中宋", 22)
+    set_run_font(subtitle.add_run(document_title), "华文中宋", 22)
     if mode == "working":
         status = document.add_paragraph()
         status.alignment = WD_ALIGN_PARAGRAPH.CENTER

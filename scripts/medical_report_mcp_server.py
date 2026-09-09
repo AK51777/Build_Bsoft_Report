@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from build_report_docx import build_docx, resolve_format_authority
+from build_construction_docx import build_construction_docx
 from construction_alignment import (
     _candidate_markdown,
     apply_decisions,
@@ -268,7 +269,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "construction_apply_and_assemble",
         "description": (
             "应用一轮人工确认结果，按原清单顺序装配完整标准方案子树；标准正文逐字复用，"
-            "缺失项只生成【待补充】，未确认项只能生成阻断型工作预览。"
+            "缺失项只生成【待补充】，未确认项只能生成阻断型工作预览。校验通过后默认继续生成专项Word。"
         ),
         "inputSchema": {
             "type": "object",
@@ -289,6 +290,10 @@ TOOLS: list[dict[str, Any]] = [
                 "reviewed_at": {"type": "string"},
                 "decisions": {"type": "array", "items": {"type": "object"}},
                 "allow_unresolved_preview": {"type": "boolean"},
+                "hierarchy_review": {"type": "object"},
+                "generate_word": {"type": "boolean", "default": True},
+                "project_name": {"type": "string"},
+                "format_config_path": {"type": "string"},
                 "output_dir": {"type": "string"},
             },
             "additionalProperties": False,
@@ -406,14 +411,14 @@ class MedicalReportMCP:
                 similar_threshold=float(arguments.get("similar_threshold", 0.6)),
             )
             match_json = output_dir / "construction-match-review.json"
-            match_md = output_dir / "construction-match-review.md"
+            match_md = output_dir / "00-待确认-清单与目录.md"
             _write_json(match_json, match_result)
             _write_text(match_md, _candidate_markdown(match_result))
 
         summary = match_result.get("summary", {})
         needs_review = int(summary.get("needs_human_review", 0)) + int(
             summary.get("content_missing", 0)
-        )
+        ) + int(summary.get("hierarchy_review_required", 0))
         result: dict[str, Any] = {
             "status": "needs_human_confirmation" if needs_review else "ready_to_assemble",
             "run_id": run_id,
@@ -428,12 +433,13 @@ class MedicalReportMCP:
                 "match_review_markdown": _artifact(match_md),
             },
             "next_action": (
-                "请把review_items作为一轮人工核对问题；确认后调用construction_apply_and_assemble。"
+                "先展示待确认清单与目录：目录归属→候选选择→拆分/标题/缺口；附直接链接和回复示例。确认后调用construction_apply_and_assemble，默认输出Word。"
                 if needs_review
                 else "无需人工修正，可用空decisions调用construction_apply_and_assemble。"
             ),
         }
         if self.config.response_mode == "review_metadata":
+            result["hierarchy_review"] = match_result.get("hierarchy_review", {})
             result["review_items"] = _review_items(match_result)
         self._write_audit(output_dir, run_id, "construction_prepare_review", result)
         return result
@@ -472,6 +478,7 @@ class MedicalReportMCP:
                 project_code,
                 match_run_id,
                 allow_unresolved_preview=bool(arguments.get("allow_unresolved_preview", False)),
+                hierarchy_review=arguments.get("hierarchy_review"),
             )
             manifest_path = output_dir / "construction-assembly-manifest.json"
             combined_path = output_dir / "construction-assembly.md"
@@ -512,11 +519,34 @@ class MedicalReportMCP:
                 "validation": _artifact(validation_path),
             },
             "next_action": (
-                "装配校验通过，可调用word_generate生成工作Word。"
+                "装配校验通过，继续生成建设清单与建设内容Word；中间MD不是交付终点。"
                 if valid
                 else "当前仅供人工核对；完成剩余确认或补充知识后重新装配。"
             ),
         }
+        if valid and arguments.get("generate_word", True):
+            try:
+                format_config = None
+                if arguments.get("format_config_path"):
+                    format_config = self.paths.input_file(arguments["format_config_path"], project_root, "format_config_path", (".json",))
+                    template, authority = resolve_format_authority(None, format_config)
+                    if template:
+                        self.paths._require_project_path(template, project_root, "format authority template")
+                    for label, raw in authority.get("_resolved_evidence", {}).items():
+                        self.paths._require_project_path(Path(str(raw)), project_root, label)
+                output_docx = self.paths.output_file(str(output_dir / "建设清单与建设内容.docx"), project_root, "output_docx_path", ".docx")
+                with self._lock:
+                    word = build_construction_docx(database, manifest, output_docx,
+                        str(arguments.get("project_name") or project_code), format_config=format_config)
+                result["status"] = "word_structure_pass_render_required" if word["structural_validation_passed"] else "word_structure_blocked"
+                result["artifacts"] = {"docx": _artifact(output_docx), "word_checks": _artifact(output_docx.with_suffix(".construction-build.json")), **result["artifacts"]}
+                result["visual_render_review"] = "not_run"
+                result["delivery_ready"] = False
+                result["next_action"] = word["next_action"]
+            except (ValueError, OSError, RuntimeError) as exc:
+                result["status"] = "word_generation_failed"
+                result["word_error"] = str(exc)
+                result["next_action"] = "Word生成未完成；报告此错误并修复后重试，不得以MD代替Word交付。"
         self._write_audit(output_dir, run_id, "construction_apply_and_assemble", result)
         return result
 

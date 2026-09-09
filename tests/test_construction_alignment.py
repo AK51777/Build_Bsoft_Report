@@ -21,6 +21,7 @@ from construction_alignment import (  # noqa: E402
     capture_scope_snapshot,
     match_scope,
     validate_manifest,
+    _candidate_markdown,
 )
 from ingest_scope_items_sqlite import ingest_scope_payload  # noqa: E402
 from knowledge_db import apply_migrations, connect, dump_json, now_iso, sha256_text, upsert_project  # noqa: E402
@@ -482,6 +483,91 @@ class ConstructionAlignmentTests(unittest.TestCase):
         self.assertIn("##### 数据质量管理\n", markdown)
         self.assertEqual(markdown.count("#### 医院信息基础平台\n"), 2)
         self.assertTrue(validate_manifest(self.database, manifest)["valid"])
+
+    def _flattened_review_case(self):
+        payload = copy.deepcopy(self.scope_payload)
+        payload["source"]["sha256"] = "synthetic-flattened-parent-case"
+        sheet = payload["sheets"][0]
+        sheet["merged_ranges"] = []
+        sheet["detected_columns"]["original_name"] = ["软件大类", "软件系统名称", "模块名称"]
+        sheet["rows"][1].update({"软件大类": "患者主索引系统", "软件系统名称": "", "模块名称": ""})
+        ingest_scope_payload(self.database, payload, project_code="ALIGN-001")
+        capture_scope_snapshot(self.database, "ALIGN-001", payload)
+        matched = match_scope(self.database, "ALIGN-001")
+        apply_decisions(self.database, {
+            "match_run_id": matched["match_run_id"], "reviewed_by": "synthetic reviewer",
+            "decisions": [
+                {"scope_row_id": item["scope_row_id"], "decision": "confirmed",
+                 "candidate_id": item["candidates"][0]["candidate_id"]}
+                if item["candidates"] else
+                {"scope_row_id": item["scope_row_id"], "decision": "confirmed_gap"}
+                for item in matched["items"]
+            ],
+        })
+        review = copy.deepcopy(matched["hierarchy_review"])
+        review.update(status="confirmed", reviewed_by="synthetic reviewer", reviewed_at=now_iso())
+        for item in review["items"]:
+            item["parent_path"] = ["院内集成平台及数据中心", "医院信息基础平台"]
+        return matched, review
+
+    def test_flattened_module_cannot_silently_become_top_level_category(self):
+        matched, review = self._flattened_review_case()
+        self.assertGreater(matched["summary"]["hierarchy_review_required"], 0)
+        self.assertIn("module_name_used_as_parent", matched["hierarchy_review"]["items"][1]["warnings"])
+        with self.assertRaisesRegex(ValueError, "hierarchy_confirmation_required"):
+            assemble(self.database, "ALIGN-001", matched["match_run_id"])
+        manifest, markdown = assemble(self.database, "ALIGN-001", matched["match_run_id"], hierarchy_review=review)
+        self.assertTrue(validate_manifest(self.database, manifest)["valid"])
+        self.assertEqual(markdown.count("### 院内集成平台及数据中心\n"), 1)
+        self.assertEqual(markdown.count("#### 医院信息基础平台\n"), 1)
+        self.assertIn("##### 患者主索引系统\n", markdown)
+        self.assertNotIn("### 患者主索引系统", markdown.splitlines())
+        self.assertEqual(markdown.count(PENDING_MARKER), 1)
+        self.assertEqual(manifest["construction_list_import"]["display_payload"]["sheets"][0]["rows"][1]["软件大类"],
+                         "患者主索引系统")
+        self.assertEqual([i["source_ordinal"] for i in manifest["application_software_solution"]["items"]], [1, 2, 3])
+
+    def test_hierarchy_review_cannot_change_content_selection(self):
+        matched, review = self._flattened_review_case()
+        first, _ = assemble(self.database, "ALIGN-001", matched["match_run_id"], hierarchy_review=review)
+        changed = copy.deepcopy(review)
+        for item in changed["items"]:
+            item["parent_path"] = ["用户确认的新分类", "医院信息基础平台"]
+        second, _ = assemble(self.database, "ALIGN-001", matched["match_run_id"], hierarchy_review=changed)
+        for a, b in zip(first["application_software_solution"]["items"], second["application_software_solution"]["items"]):
+            for key in ("block_ids", "fragments", "content_hash", "root_heading_path"):
+                self.assertEqual(a[key], b[key])
+        self.assertNotEqual(first["manifest_hash"], second["manifest_hash"])
+        self.assertTrue(validate_manifest(self.database, second)["valid"])
+
+    def test_hierarchy_review_rejects_stale_incomplete_duplicate_or_self_parent(self):
+        matched, review = self._flattened_review_case()
+        variants = []
+        stale = copy.deepcopy(review); stale["scope_snapshot_hash"] = "old"; variants.append(stale)
+        candidate = copy.deepcopy(review); candidate["status"] = "candidate"; variants.append(candidate)
+        missing = copy.deepcopy(review); missing["items"].pop(); variants.append(missing)
+        duplicate = copy.deepcopy(review); duplicate["items"].append(duplicate["items"][0]); variants.append(duplicate)
+        self_parent = copy.deepcopy(review)
+        self_parent["items"][1]["parent_path"] = [matched["items"][1]["original_name"]]
+        variants.append(self_parent)
+        for invalid in variants:
+            with self.subTest(review=invalid), self.assertRaises(ValueError):
+                assemble(self.database, "ALIGN-001", matched["match_run_id"], hierarchy_review=invalid)
+
+    def test_mutated_parent_path_is_blocked_by_independent_validation(self):
+        matched, review = self._flattened_review_case()
+        manifest, _ = assemble(self.database, "ALIGN-001", matched["match_run_id"], hierarchy_review=review)
+        manifest["application_software_solution"]["items"][1]["display_parent_path"] = ["错误父目录"]
+        result = validate_manifest(self.database, manifest)
+        self.assertFalse(result["valid"])
+        self.assertIn("assembly_heading_hierarchy_mismatch", [issue["code"] for issue in result["issues"]])
+
+    def test_review_package_places_user_action_and_parent_paths_before_candidates(self):
+        matched, _ = self._flattened_review_case()
+        markdown = _candidate_markdown(matched)
+        self.assertLess(markdown.index("当前需要你确认"), markdown.index("对照运行"))
+        self.assertLess(markdown.index("先核对目录归属"), markdown.index("再核对标准模块候选"))
+        self.assertIn("确认后将继续装配、校验并生成 Word", markdown)
 
     def test_human_can_bind_exact_capability_to_reviewed_alias_root(self) -> None:
         payload = copy.deepcopy(self.scope_payload)

@@ -78,11 +78,11 @@
 ## 6. 标准方案完整装配
 
 1. 应用软件建设方案严格按客户清单来源顺序组装，不按公司标准目录或能力 ID 重排。
-2. `confirmed` 项按“客户软件大类/领域 → 客户上级路径 → 数据库标准软件系统及中间祖先 → 客户模块”建立标题树，随后写入唯一标准方案根标题下的全部内容块。客户路径和标准路径中的等价重复标题只保留一次，相邻模块共享的上级标题只输出一次；切换客户大类后必须重新输出该大类及其标准上级标题。
+2. `confirmed` 项按经确认的 `hierarchy_review.items[].parent_path → 客户模块` 建立标题树，随后写入唯一标准方案根标题下的全部内容块。尚无目录审查且原表归属明确时，才使用“客户软件大类/领域 → 客户上级路径 → 数据库标准软件系统及中间祖先 → 客户模块”的兼容路径。模块与父标题等价时触发 `hierarchy_confirmation_required`，禁止把错列系统提升成大类。恢复合并/错列语义和首轮目录确认见 `construction-only-workflow.md`。相邻模块共享的上级标题只输出一次；切换客户大类后保持来源顺序。
 3. 标准块 `clean_text` 必须逐字相等，块顺序必须完整一致；禁止改写、摘要、润色、参数替换、禁用词替换、项目语态归一、长度截断或 AI 补段。
 4. 数据库标准上级标题由能力 `product_name` 在已确认 `root_heading_path` 中的位置确定，模块以下子标题由标准 `heading_path` 相对根路径确定；不得由 AI 凭名称补写祖先。表格、图片、编号或富文本存在时，优先使用 `content_payload/asset_manifest` 重建。仅有 `plain_text` 的旧数据必须显式记录保真能力限制，不能声称已保留原 Word 版式。
 5. `confirmed_gap` 项仍建立客户模块标题，正文只写 `【待补充】`。
-6. 装配清单必须保存每项能力 ID、客户领域与层级、客户分组路径、数据库标准祖先路径、最终显示父路径、根路径、块 ID 有序列表、逐块文本哈希和总内容哈希；校验时必须从清单快照和当前知识快照重新计算标题路径。
+6. 装配清单必须保存每项能力 ID、客户领域与层级、客户分组路径、数据库标准祖先路径、最终显示父路径、根路径、块 ID 有序列表、逐块文本哈希和总内容哈希；目录审查必须绑定匹配运行、清单显示哈希和知识包内容哈希并覆盖全部逻辑行。校验时从快照和确认审查独立复算父路径；Word再校验实际大纲父路径。不得只凭级别连续宣称目录正确，超过支持深度必须阻断，不能截断成同级。
 7. 清单片段绑定 `project_scope.software_construction_list` 和 `overall_design.software_construction_list` 两个语义位置，可在确认目录中分别导入；应用软件方案片段绑定 `overall_design.application_software_solution`。章节编号由确认版目录决定，模块不得硬编码任何单体项目编号。
 8. 少量相似或缺失项未闭环时，可用 `--allow-unresolved-preview` 生成不可交付的工作预览：已确认项照常逐字装配，未确认项只建立客户模块标题并写 `【待确认】`。预览必须标记 `preview_only=true`、总状态 `blocked`，且 `validate` 必须返回阻断；它不能替代完整装配稿。已确认缺口仍使用 `【待补充】`。
 9. 装配校验必须同时绑定并复算 `manifest_hash`、持久化装配清单、匹配运行、清单快照、知识包内容哈希和完整性证明；校验报告必须返回相同的 `manifest_id/manifest_hash/package_content_hash`。旧校验文件不得替代当前复算。
@@ -110,6 +110,7 @@ python scripts/construction_alignment.py capture-scope <knowledge.sqlite> <proje
 python scripts/construction_alignment.py match <knowledge.sqlite> <project-code> --package-id <package-id> --output-json construction-match-review.json --output-md construction-match-review.md
 python scripts/construction_alignment.py apply-decisions <knowledge.sqlite> <construction-decisions.json> --output construction-decision-apply.json
 python scripts/construction_alignment.py assemble <knowledge.sqlite> <project-code> <match-run-id> --output-json construction-assembly-manifest.json --output-scope-md software-construction-list.md --output-solution-md application-software-solution.md --output-md construction-assembly.md
+python scripts/construction_alignment.py assemble <knowledge.sqlite> <project-code> <match-run-id> --hierarchy-review <confirmed-hierarchy-review.json> --output-json construction-assembly-manifest.json --output-md construction-assembly.md
 python scripts/construction_alignment.py assemble <knowledge.sqlite> <project-code> <match-run-id> --allow-unresolved-preview --output-json construction-assembly-preview.json --output-md construction-assembly-preview.md
 python scripts/construction_alignment.py validate <knowledge.sqlite> <construction-assembly-manifest.json> --output construction-assembly-validation.json
 ```

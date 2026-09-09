@@ -12,6 +12,7 @@ import json
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -29,6 +30,7 @@ from standard_solution_coverage import require_complete_standard_solution_covera
 
 
 MATCHER_VERSION = "construction-module-subtree-v3"
+HIERARCHY_VERSION = "construction-parent-review-v1"
 MAX_REVIEW_CANDIDATES = 5
 WEAK_SIMILARITY_THRESHOLD = 0.65
 SEMANTIC_ROOT_SIMILARITY_THRESHOLD = 0.8
@@ -388,7 +390,8 @@ def _dedupe_heading_path(values: Iterable[Any]) -> list[str]:
 
 
 def _assembly_heading_fields(
-    scope_row: dict[str, Any], root: list[str], product_name: Any
+    scope_row: dict[str, Any], root: list[str], product_name: Any,
+    reviewed_parent_path: list[str] | None = None,
 ) -> dict[str, Any]:
     customer_group_path, customer_parent_path = _customer_heading_paths(scope_row)
     standard_ancestor_path = _standard_ancestor_path(root, product_name)
@@ -398,10 +401,94 @@ def _assembly_heading_fields(
         "customer_group_path": customer_group_path,
         "customer_parent_path": customer_parent_path,
         "standard_ancestor_path": standard_ancestor_path,
-        "display_parent_path": _dedupe_heading_path(
+        "display_parent_path": reviewed_parent_path if reviewed_parent_path is not None else _dedupe_heading_path(
             customer_group_path + customer_parent_path + standard_ancestor_path
         ),
     }
+
+
+def _hierarchy_warnings(scope_row: dict[str, Any]) -> list[str]:
+    """A value displaced into the category column is not a category declaration."""
+    fields = _assembly_heading_fields(scope_row, [], "")
+    leaf = scope_row.get("original_name", "")
+    if any(_same_review_heading(leaf, parent) for parent in fields["display_parent_path"]):
+        return ["module_name_used_as_parent"]
+    return []
+
+
+def _reviewed_parent_paths(
+    review: dict[str, Any] | None, binding: dict[str, Any], rows: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    if review is None:
+        return {}
+    if not isinstance(review, dict) or review.get("schema_version") != HIERARCHY_VERSION:
+        raise ValueError("invalid hierarchy review schema")
+    if review.get("status") != "confirmed" or not str(review.get("reviewed_by") or "").strip():
+        raise ValueError("hierarchy review must be explicitly confirmed")
+    try:
+        reviewed_at = datetime.fromisoformat(str(review.get("reviewed_at") or ""))
+        if reviewed_at.tzinfo is None:
+            raise ValueError("timezone required")
+    except ValueError as exc:
+        raise ValueError("hierarchy review requires a timezone-aware reviewed_at") from exc
+    for key in ("match_run_id", "scope_snapshot_hash", "package_content_hash"):
+        if review.get(key) != binding.get(key):
+            raise ValueError(f"stale hierarchy review: {key}")
+    entries = review.get("items")
+    if not isinstance(entries, list):
+        raise ValueError("hierarchy review items must be a list")
+    expected = {row["scope_row_id"]: row for row in rows}
+    paths: dict[str, list[str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("hierarchy review item must be an object")
+        row_id = entry.get("scope_row_id")
+        path = entry.get("parent_path")
+        if row_id not in expected or row_id in paths:
+            raise ValueError("hierarchy review contains an unknown or duplicate scope row")
+        if not isinstance(path, list) or any(
+            not isinstance(value, str) or not value.strip() or value != value.strip()
+            or "\n" in value or "\r" in value for value in path
+        ):
+            raise ValueError("parent_path must contain nonempty single-line titles")
+        if len(path) > 4:
+            raise ValueError("hierarchy exceeds supported parent depth; review the directory")
+        if any(_same_review_heading(expected[row_id]["original_name"], value) for value in path):
+            raise ValueError("module cannot be its own parent")
+        if len(_dedupe_heading_path(path)) != len(path):
+            raise ValueError("hierarchy contains repeated ancestor titles")
+        paths[row_id] = list(path)
+    if set(paths) != set(expected):
+        raise ValueError("hierarchy review must cover every scope row exactly once")
+    return paths
+
+
+def _hierarchy_candidate(result: dict[str, Any]) -> dict[str, Any]:
+    """Suggestions remain candidates, including a parent inferred from adjacent rows."""
+    entries: list[dict[str, Any]] = []
+    previous_root: list[str] = []
+    previous_parent: list[str] = []
+    for item in result["items"]:
+        candidate = next((c for c in item["candidates"] if c.get("root_heading_path")), {})
+        root = candidate.get("root_heading_path", [])
+        row = {"hierarchy_json": item["hierarchy"], "domain": item.get("domain", ""),
+               "original_name": item["original_name"]}
+        fields = _assembly_heading_fields(row, root, candidate.get("product_name", ""))
+        warnings = _hierarchy_warnings(row)
+        parent = fields["display_parent_path"]
+        # Carry only an evidenced consecutive standard parent, never the last arbitrary category.
+        if warnings:
+            parent = (list(previous_parent) if root and root[:-1] == previous_root[:-1]
+                      and previous_parent else fields["standard_ancestor_path"])
+        parent = [value for value in parent if not _same_review_heading(value, item["original_name"])]
+        entries.append({"scope_row_id": item["scope_row_id"], "source_ordinal": item["source_ordinal"],
+                        "original_name": item["original_name"], "parent_path": parent,
+                        "warnings": warnings, "parent_path_is_suggestion": True})
+        previous_root, previous_parent = root, parent
+    return {"schema_version": HIERARCHY_VERSION, "status": "candidate", "reviewed_by": "",
+            "reviewed_at": "", "match_run_id": result["match_run_id"],
+            "scope_snapshot_hash": result["scope_snapshot_hash"],
+            "package_content_hash": result["package_content_hash"], "items": entries}
 
 
 def _root_options(
@@ -541,12 +628,25 @@ def _candidate_sort_key(item: dict[str, Any]) -> tuple[bool, bool, bool, float, 
 
 def _candidate_markdown(result: dict[str, Any]) -> str:
     lines = ["# 建设清单与标准清单对照复核包", ""]
+    lines.extend([
+        "**当前需要你确认：标准模块选择，以及每个模块所属的大类和父目录。**",
+        "确认后将继续装配、校验并生成 Word。下方候选和目录建议均不代表已确认。",
+        "请集中说明要调整的条目；接受全部已展示建议时可回复“按本核对表的模块和目录建议处理并生成 Word”。",
+        "“按首选”只适用于已展示且可装配的候选，不自动确认缺口、拆分或目录歧义。", "",
+    ])
     lines.append(f"- 对照运行：`{result['match_run_id']}`")
     lines.append(f"- 项目清单行数：{result['summary']['scope_rows']}")
     lines.append(f"- 精确自动确认：{result['summary']['auto_confirmed_exact']}")
     lines.append(f"- 待人工确认：{result['summary']['needs_human_review']}")
     lines.append(f"- 标准内容缺失：{result['summary']['content_missing']}")
-    lines.extend(["", "## 逐项核对", ""])
+    lines.extend(["", "## 先核对目录归属", "", "|序号|清单模块|建议父目录|需处理事项|",
+                  "|---|---|---|---|"])
+    for item in result.get("hierarchy_review", {}).get("items", []):
+        parent = " → ".join(item["parent_path"]) or "顶层模块（请核对）"
+        note = "原行把模块写入大类位置，请确认父目录" if item["warnings"] else "核对归属"
+        lines.append(f"|{item['source_ordinal']}|{_markdown_cell(item['original_name'])}|"
+                     f"{_markdown_cell(parent)}|{note}|")
+    lines.extend(["", "## 再核对标准模块候选", ""])
     for item in result["items"]:
         lines.append(f"### {item['source_ordinal']}. {item['original_name']}")
         lines.append("")
@@ -776,6 +876,7 @@ def match_scope(
                     "original_name": scope_row["original_name"],
                     "hierarchy": hierarchy,
                     "state": state,
+                    "domain": scope_row.get("domain", ""),
                     "question": question,
                     "candidates": candidates_out,
                     "auto_selected_candidate_id": selected["candidate_id"] if selected else "",
@@ -787,6 +888,7 @@ def match_scope(
             "auto_confirmed_exact": auto_count,
             "needs_human_review": review_count,
             "content_missing": missing_count,
+            "hierarchy_review_required": sum(bool(_hierarchy_warnings(row)) for row in scope_rows),
         }
         conn.execute(
             """
@@ -856,11 +958,12 @@ def match_scope(
                 ),
             )
         conn.commit()
-    return {
+    result = {
         "database": str(database.resolve()),
         "project_code": project_code,
         "match_run_id": run_id,
         "scope_snapshot_id": snapshot["scope_snapshot_id"],
+        "scope_snapshot_hash": snapshot["display_hash"],
         "package_id": package_id,
         "package_content_hash": package_hash,
         "matcher_version": MATCHER_VERSION,
@@ -868,6 +971,8 @@ def match_scope(
         "items": result_items,
         "review_gate": "similar, ambiguous and missing items require a human decision before assembly",
     }
+    result["hierarchy_review"] = _hierarchy_candidate(result)
+    return result
 
 
 def apply_decisions(database: Path, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1009,13 +1114,13 @@ def _markdown_cell(value: Any) -> str:
     return str(value or "").replace("|", "\\|").replace("\r\n", "<br>").replace("\n", "<br>")
 
 
-def _scope_snapshot_markdown(payload: dict[str, Any]) -> list[str]:
-    lines: list[str] = ["## 软件建设清单", ""]
+def _scope_snapshot_markdown(payload: dict[str, Any], heading_level: int = 2, title: str = "软件建设清单") -> list[str]:
+    lines: list[str] = [f"{'#' * heading_level} {title}", ""]
     for sheet in payload.get("sheets", []):
         headers = [str(item) for item in sheet.get("headers", [])]
         if not headers:
             continue
-        lines.append(f"### {sheet.get('name', '')}")
+        lines.append(f"{'#' * (heading_level + 1)} {sheet.get('name', '')}")
         lines.append("")
         lines.append("|" + "|".join(_markdown_cell(item) for item in headers) + "|")
         lines.append("|" + "|".join("---" for _ in headers) + "|")
@@ -1049,7 +1154,9 @@ def _solution_item_markdown(item: dict[str, Any], heading_level: int = 3) -> lis
         ):
             common = len(relative) - 1
         for index in range(common, len(relative)):
-            level = min(7, heading_level + 1 + index)
+            level = heading_level + 1 + index
+            if level > 7:
+                raise ValueError("heading_depth_exceeded: review parent paths; do not flatten child headings")
             lines.extend([f"{'#' * level} {relative[index]}", ""])
         lines.extend([fragment["clean_text"], ""])
         last_relative = relative
@@ -1057,13 +1164,13 @@ def _solution_item_markdown(item: dict[str, Any], heading_level: int = 3) -> lis
     return lines
 
 
-def render_scope_fragment(manifest: dict[str, Any]) -> str:
+def render_scope_fragment(manifest: dict[str, Any], heading_level: int = 2, title: str = "软件建设清单") -> str:
     payload = manifest["construction_list_import"]["display_payload"]
-    return "\n".join(_scope_snapshot_markdown(payload))
+    return "\n".join(_scope_snapshot_markdown(payload, heading_level, title))
 
 
-def render_solution_fragment(manifest: dict[str, Any]) -> str:
-    lines = ["## 应用软件建设方案", ""]
+def render_solution_fragment(manifest: dict[str, Any], heading_level: int = 2, title: str = "应用软件建设方案") -> str:
+    lines = [f"{'#' * heading_level} {title}", ""]
     last_parent_path: list[str] = []
     for item in manifest["application_software_solution"]["items"]:
         parent_path = [str(value) for value in item.get("display_parent_path", [])]
@@ -1074,9 +1181,11 @@ def render_solution_fragment(manifest: dict[str, Any]) -> str:
         ):
             common += 1
         for index in range(common, len(parent_path)):
-            level = min(7, 3 + index)
+            level = heading_level + 1 + index
             lines.extend([f"{'#' * level} {parent_path[index]}", ""])
-        module_level = min(7, 3 + len(parent_path))
+        module_level = heading_level + 1 + len(parent_path)
+        if module_level > 7:
+            raise ValueError("heading_depth_exceeded: review parent paths; do not flatten module headings")
         lines.extend(_solution_item_markdown(item, heading_level=module_level))
         last_parent_path = parent_path
     return "\n".join(lines)
@@ -1088,6 +1197,7 @@ def assemble(
     match_run_id: str,
     *,
     allow_unresolved_preview: bool = False,
+    hierarchy_review: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     with connect(database.resolve()) as conn:
         apply_migrations(conn)
@@ -1123,8 +1233,17 @@ def assemble(
         ]
         items: list[dict[str, Any]] = []
         unresolved: list[dict[str, Any]] = []
+        reviewed_paths = _reviewed_parent_paths(hierarchy_review, {
+            "match_run_id": match_run_id, "scope_snapshot_hash": snapshot["display_hash"],
+            "package_content_hash": run["package_content_hash"],
+        }, scope_rows)
+        ambiguous_rows = [row for row in scope_rows if _hierarchy_warnings(row)]
+        if ambiguous_rows and not reviewed_paths:
+            raise ValueError("hierarchy_confirmation_required: review category and parent paths before assembly: "
+                             + ", ".join(row["original_name"] for row in ambiguous_rows[:8]))
         for scope_row in scope_rows:
-            base_heading_fields = _assembly_heading_fields(scope_row, [], "")
+            reviewed_parent = reviewed_paths.get(scope_row["scope_row_id"])
+            base_heading_fields = _assembly_heading_fields(scope_row, [], "", reviewed_parent)
             decision = conn.execute(
                 """
                 SELECT * FROM construction_match_decision
@@ -1238,7 +1357,7 @@ def assemble(
                 [{"block_id": block["block_id"], "text_hash": block["text_hash"]} for block in selected_blocks]
             )
             heading_fields = _assembly_heading_fields(
-                scope_row, root, capability["product_name"]
+                scope_row, root, capability["product_name"], reviewed_parent
             )
             items.append(
                 {
@@ -1264,6 +1383,8 @@ def assemble(
             )
         if [item["source_ordinal"] for item in items] != sorted(item["source_ordinal"] for item in items):
             raise ValueError("assembly order does not preserve customer scope order")
+        # Check the entire rendered hierarchy before persisting a completed manifest.
+        render_solution_fragment({"application_software_solution": {"items": items}})
         raw_payload = _json(snapshot["display_payload_json"], {})
         manifest_core = {
             "schema_version": "construction-assembly-v1",
@@ -1292,6 +1413,8 @@ def assemble(
             "unresolved_scope_rows": unresolved,
             "preview_only": bool(unresolved),
         }
+        if hierarchy_review is not None:
+            manifest_core["hierarchy_review"] = hierarchy_review
         manifest_hash = _canonical_hash(manifest_core)
         manifest_id = stable_id("CONSTRUCTIONMANIFEST", match_run_id, manifest_hash)
         status = (
@@ -1432,7 +1555,28 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
         orders = [_int(item.get("source_ordinal")) for item in items]
         if orders != sorted(orders) or len(orders) != len(set(orders)):
             issues.append({"code": "customer_order_not_preserved", "blocking": True})
+        all_scope_rows = [dict(row) for row in conn.execute(
+            """SELECT csr.*,psi.original_name,psi.domain FROM construction_scope_row csr
+               JOIN project_scope_item psi ON psi.scope_id=csr.scope_id
+               WHERE csr.scope_snapshot_id=? ORDER BY csr.source_ordinal""",
+            (manifest.get("scope_snapshot_id"),),
+        )]
+        reviewed_paths: dict[str, list[str]] = {}
+        try:
+            reviewed_paths = _reviewed_parent_paths(manifest.get("hierarchy_review"), manifest, all_scope_rows)
+        except ValueError as exc:
+            issues.append({"code": "hierarchy_review_invalid", "blocking": True, "detail": str(exc)})
+        if not reviewed_paths and any(_hierarchy_warnings(row) for row in all_scope_rows):
+            issues.append({"code": "hierarchy_confirmation_required", "blocking": True})
+        if [item.get("scope_row_id") for item in items] != [row["scope_row_id"] for row in all_scope_rows]:
+            issues.append({"code": "scope_row_coverage_mismatch", "blocking": True})
         for item in items:
+            depth = 3 + len(item.get("display_parent_path", [])) + max(
+                (len(fragment.get("relative_heading_path", [])) for fragment in item.get("fragments", [])),
+                default=0,
+            )
+            if depth > 7:
+                issues.append({"code": "heading_depth_exceeded", "blocking": True, "item": item.get("original_name")})
             scope_row = conn.execute(
                 """
                 SELECT csr.source_ordinal,csr.scope_row_id,csr.hierarchy_json,
@@ -1461,6 +1605,7 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
                     dict(scope_row),
                     [str(value) for value in item.get("root_heading_path", [])],
                     item.get("product_name", ""),
+                    reviewed_paths.get(item.get("scope_row_id")),
                 )
                 if any(
                     item.get(key) != value for key, value in expected_headings.items()
@@ -1615,6 +1760,8 @@ def main() -> int:
     assembly_parser.add_argument("--output-md", type=Path)
     assembly_parser.add_argument("--output-scope-md", type=Path)
     assembly_parser.add_argument("--output-solution-md", type=Path)
+    assembly_parser.add_argument("--hierarchy-review", type=Path,
+                                 help="confirmed category/parent paths bound to this match and snapshot")
     assembly_parser.add_argument(
         "--allow-unresolved-preview",
         action="store_true",
@@ -1646,6 +1793,7 @@ def main() -> int:
             args.project_code,
             args.match_run_id,
             allow_unresolved_preview=args.allow_unresolved_preview,
+            hierarchy_review=load_json(args.hierarchy_review) if args.hierarchy_review else None,
         )
         _write_json(args.output_json, result)
         _write_text(args.output_md, markdown)

@@ -39,6 +39,28 @@ class MedicalReportMCPTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
+    def test_confirmed_hierarchy_continues_to_builtin_word_by_default(self) -> None:
+        import test_construction_alignment as fixture
+        case = fixture.ConstructionAlignmentTests()
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        matched, review = case._flattened_review_case()
+        server = MedicalReportMCP(ServerConfig((case.database.parent,), response_mode="review_metadata"))
+        arguments = {"project_root": str(case.database.parent), "database_path": str(case.database),
+                     "project_code": "ALIGN-001", "project_name": "合成专项测试", "match_run_id": matched["match_run_id"],
+                     "reviewed_by": "synthetic-reviewer", "decisions": [], "hierarchy_review": review}
+        result = server.construction_apply_and_assemble(arguments)
+        self.assertEqual(result["status"], "word_structure_pass_render_required")
+        self.assertEqual(next(iter(result["artifacts"])), "docx")
+        self.assertTrue(Path(result["artifacts"]["docx"]["path"]).is_file())
+        self.assertFalse(result["delivery_ready"])
+        self.assertEqual(result["visual_render_review"], "not_run")
+        with patch("medical_report_mcp_server.build_construction_docx", side_effect=ValueError("synthetic format error")):
+            failed = server.construction_apply_and_assemble(arguments)
+        self.assertEqual(failed["status"], "word_generation_failed")
+        self.assertIn("synthetic format error", failed["word_error"])
+        self.assertNotIn("docx", failed["artifacts"])
+
     def test_initialize_and_tool_discovery(self) -> None:
         initialized = self.server.dispatch(
             {

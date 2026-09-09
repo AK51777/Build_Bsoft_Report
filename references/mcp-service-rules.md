@@ -44,7 +44,7 @@
 
 `review_metadata`响应模式可以向调用方返回人工对话必需的项目模块名、候选模块名、匹配分数、候选 ID 和方案根路径，但不得返回标准方案正文或块 ID。`paths_only`模式只返回摘要和本地制品路径。
 
-调用方必须把所有`review_items`集中成一轮人工核对，不得自行替用户确认相似项、歧义项或内容缺失项。
+调用方必须把 `hierarchy_review` 的目录归属与所有 `review_items` 集中成一轮人工核对，具体交互见 `construction-only-workflow.md`。`00-待确认-清单与目录.md` 是第一入口，先在对话中明确需确认的事项和确认后自动输出Word；不能藏在中间产物列表中。模块精确匹配不代表目录正确，`hierarchy_review_required` 大于0仍返回待确认状态。不得自行替用户确认相似、歧义或缺失项。
 
 ### 3.3 `construction_apply_and_assemble`
 
@@ -58,9 +58,13 @@
 - 装配后校验清单快照哈希、知识包哈希、块哈希、标题根、顺序和缺失标记。
 - 返回并锁定 `manifest_id`、`manifest_hash`、`package_id` 和 `package_content_hash`；校验必须重新计算这些绑定，不能复用旧校验结论。
 
-只有返回`status=validated`且`validation.valid=true`，才可进入正常 Word 构建。`blocked_working_preview`只能供人工检查。
+传入确认后的 `hierarchy_review`；字段和哈希校验由核心装配模块执行。`validation.valid=true` 后默认调用 `build_construction_docx.py` 自动生成建设清单与建设内容两章Word；未指定格式配置时复用内置样式。可以传 `project_name`、`format_config_path`；仅在用户要求只对照/MD时传 `generate_word=false`，此时返回 `validated`。`blocked_working_preview` 不能进入Word。
+
+自动Word状态：`word_structure_pass_render_required` 表示结构通过、待渲染；`word_structure_blocked` 表示格式阻断；`word_generation_failed` 提供 `word_error`，不得将其当作MD交付成功。生成成功时制品列表第一项是 `docx`，但 `delivery_ready=false` 直到真实渲染复核完成。该流程不进入完整可研报批门禁。
 
 ### 3.4 `word_generate`
+
+这是保留的已确认外部模板/片段兼容入口。清单专项默认使用上一节的自动两章出口，避免兼容入口的“第1章 专项预览”包装和可研封面被误当作专项成品。
 
 输入装配 Markdown、输出 DOCX、项目数据库与代码、装配清单、装配校验报告、项目名和已确认的格式权威配置。服务必须现场复算装配校验，要求清单、校验文件和当前数据库的 `manifest_id/manifest_hash/package_content_hash/validation_hash` 全部一致，并要求输入 Markdown 与该装配清单确定性重建结果逐字相等。缺少任一证据或自行拼写的 Markdown 必须阻断。格式权威配置必须绑定：
 
