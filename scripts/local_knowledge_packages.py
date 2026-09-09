@@ -423,6 +423,7 @@ def load_config(
     *,
     environ: Mapping[str, str] | None = None,
     home: Path | None = None,
+    required_kinds: tuple[str, ...] = PACKAGE_KINDS,
 ) -> dict[str, Any]:
     env = environ if environ is not None else os.environ
     raw = explicit or (Path(env[CONFIG_ENV]) if env.get(CONFIG_ENV) else _default_config_path(home))
@@ -431,7 +432,9 @@ def load_config(
     if payload.get("schema_version") != "1.0" or not isinstance(payload.get("packages"), dict):
         raise ValueError("unsupported or incomplete local knowledge config")
     packages: dict[str, Any] = {}
-    for kind in PACKAGE_KINDS:
+    if not required_kinds or any(kind not in PACKAGE_KINDS for kind in required_kinds):
+        raise ValueError("invalid required knowledge kinds")
+    for kind in required_kinds:
         value = payload["packages"].get(kind)
         if not isinstance(value, dict) or not str(value.get("path") or "").strip():
             raise ValueError(f"local knowledge config is missing packages.{kind}.path")
@@ -445,14 +448,14 @@ def load_config(
         }
         if packages[kind]["max_age_days"] < 1:
             raise ValueError(f"packages.{kind}.max_age_days must be positive")
-    return {"config_path": path, "packages": packages}
+    return {"config_path": path, "packages": packages, "required_kinds": required_kinds}
 
 
 def package_status(config: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     results: dict[str, Any] = {}
     overall = "ready"
-    for kind in PACKAGE_KINDS:
+    for kind in config.get("required_kinds", PACKAGE_KINDS):
         item = config["packages"][kind]
         try:
             validated = validate_local_package(item["path"], expected_kind=kind)
@@ -704,23 +707,25 @@ def sync_to_project(
     project_database: Path,
     project_code: str,
     validation_selection: dict[str, Any] | None = None,
+    construction_only: bool = False,
 ) -> dict[str, Any]:
     with atomic_database(project_database):
         return _sync_to_project(config, project_database=project_database, project_code=project_code,
-                                validation_selection=validation_selection)
+                                validation_selection=validation_selection, construction_only=construction_only)
 
 
 def _sync_to_project(
     config: dict[str, Any], *, project_database: Path, project_code: str,
     validation_selection: dict[str, Any] | None = None,
+    construction_only: bool = False,
 ) -> dict[str, Any]:
     project_database = project_database.expanduser().resolve()
     standard_status = validate_local_package(config["packages"]["standard"]["path"], expected_kind="standard")
-    policy_status = validate_local_package(config["packages"]["policy"]["path"], expected_kind="policy")
+    policy_status = {} if construction_only else validate_local_package(config["packages"]["policy"]["path"], expected_kind="policy")
     standard_pack = _load_package_payload(config["packages"]["standard"]["path"], "standard_pack")
-    catalog = _load_package_payload(config["packages"]["policy"]["path"], "policy_catalog")
-    policies = _load_package_payload(config["packages"]["policy"]["path"], "verified_policies")
-    standards = _load_package_payload(config["packages"]["policy"]["path"], "document_standards")
+    catalog = {} if construction_only else _load_package_payload(config["packages"]["policy"]["path"], "policy_catalog")
+    policies = {} if construction_only else _load_package_payload(config["packages"]["policy"]["path"], "verified_policies")
+    standards = {} if construction_only else _load_package_payload(config["packages"]["policy"]["path"], "document_standards")
     if not standard_pack:
         raise LocalKnowledgeError("standard local package is missing standard_pack payload")
     standard_content_hash = _payload_hash(standard_pack)
@@ -870,6 +875,7 @@ def _sync_to_project(
         catalog_ids=selection.get("catalog_ids") or catalog_ids,
         permission_scopes=selection.get("permission_scopes", {}),
         allow_stale=False,
+        source_types={"knowledge_package"} if construction_only else None,
     )
     return {
         "database": str(project_database),

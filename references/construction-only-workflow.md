@@ -17,7 +17,32 @@
 
 本模式不调用 `run_project_pipeline.py`、事实/政策核验包、投资估算、效益分析、完整可研章节生成及 `full_report_delivery`。保留这些模块供完整可研使用。正文只读已验证项目快照；不得把全库候选或原始参考稿当成已确认标准。
 
-当前 `local_knowledge_packages.py` 的新设备 bootstrap/sync 仍以标准包与政策包成对管理，这是现有初始化耦合，不表示专项要执行政策匹配。已有项目复用固定快照；新设备若因此阻断，只报告具体初始化问题，不向用户索取无关政策材料，也不虚报已实现单标准包启动。
+专项入口只要求标准包，使用 `load_config(required_kinds=("standard",))` 和原子 `sync_to_project(construction_only=True)`；政策包缺失或损坏不阻断专项，标准包完整性失败仍阻断。已有项目固定并验证标准快照，不静默升级。完整可研与双包管理默认行为保持原契约。
+
+## 共享编排入口
+
+Skill 与 MCP 优先使用 `construction_workflow.py`，而不是临时串联多个脚本。目录只展示 `01-请确认建设清单对照.md` 和 `02-交付/建设清单与建设内容.docx`，技术结果集中在 `运行数据/`。首轮只生成核对数据，不装配长正文预览，不创建完整可研空产物。
+
+```text
+python scripts/construction_workflow.py prepare-review <工作台> <清单.xlsx/csv/tsv/docx/md/json> --project-code <编号> [--project-name <名称>] [--database <已有项目.sqlite>] [--plan <结构建议.json>]
+python scripts/construction_workflow.py confirm-and-generate <工作台> <确认.json>
+python scripts/construction_workflow.py resume <工作台>
+python scripts/construction_workflow.py status <工作台>
+python scripts/construction_workflow.py render <工作台>
+python scripts/construction_workflow.py record-render-review <工作台> <实际视觉复核.json>
+```
+
+粘贴表格可保存为 Markdown 输入。字段含义不明时在提取 JSON 的 `detected_columns` 中明确解释，不无条件填充分类。结构建议数组通过 `original_ordinal` 关联原始行，可设置 `role: heading_only`、`title`、`parent_path` 或 `modules: [{name, parent_path, choice}]`。`choice` 指定当前候选信息。展开、标题用途、目录、缺口及首选在主核对页一起展示，确认前仍为建议；外部显示原始序号与 `2.1` 一类子号。
+
+确认 JSON 包含 `review_id`、`reviewed_by`、实际 `user_reply` 和 `accept_all: true`。标志只表示接受本页已展示建议，不能代替用户答复。局部更改通过 `overrides` 指定当前 `scope_row_id` 的明确 `decision/candidate_id/capability_id/root_heading_path/parent_path`；其余接受本页建议。低置信、无法唯一定位根的项必须明确指定；不自动变成缺口。结构拆分/删项改变时重新生成核对页。已有用户确认不得重复询问。
+
+原始行ID、逐行哈希、标题用途、一对多 `mapping_edges` 和来源顺序写入manifest；Word原表从同一manifest读取，禁止读取旁路清单。装配保存唯一 `heading_tree`（父ID、层级、范围行、源块、树哈希），Word只映射样式；继续执行 DEV-077 的目录确认、自父级、深度和真实大纲检查。
+
+首选子树重复在首轮提示，最终映射重复也保存到manifest；默认分别保留，不自动删正文。匹配缓存绑定清单、实际标准能力与正文、阈值和匹配版本。同一有效业务决定重复提交幂等；输入/标准/建议改变则旧确认失效。续跑先验证最新决定与manifest，再按文件哈希及代码/样式签名复用Word；不会仅凭“文件存在”跳过校验。
+
+确认后自动生成DOCX并尝试整稿渲染。Windows使用本机Word，其他系统使用LibreOffice，PNG生成需要pypdfium2和Pillow；不自动安装依赖。环境失败时保留 `docx_created_render_pending` 及具体错误，可用 `render/resume` 续跑。机器渲染成功不等于视觉复核完成。
+
+视觉复核记录必须包含当前 `docx_sha256`、`result: pass`、`checked_all_pages: true`、`reviewer_type: ai_visual/human`、实际 `reviewed_by`，以及与 `render-binding.json` 完全相同的 `page_count/pages`（页号、路径和哈希）。逐页检查后才能记录，不把AI复核写成真人签认。全部通过才返回 `ready/ready_with_gaps`。本版仅复用同一Word哈希的整套渲染，不跨Word版本复用页面视觉结论。
 
 ## 先恢复目录含义，再确认匹配
 
@@ -48,9 +73,9 @@ CLI 路径：执行决定回写 → 带目录审查的 `assemble` → `validate`
 python scripts/build_construction_docx.py <knowledge.sqlite> <construction-assembly-manifest.json> <建设清单与建设内容.docx> --project-name <项目名称> [--format-config <已确认格式配置.json>]
 ```
 
-MCP 路径：`construction_apply_and_assemble` 传入 `hierarchy_review`；`generate_word` 默认 true。只有用户明确要求仅对照/MD时才关闭。项目名已知就传入 `project_name`；未知可使用项目代码，不编造医院名称。
+MCP 新工作台使用 `construction_workflow`，action 为 `prepare_review/confirm_and_generate/resume/get_status/render/record_render_review`，共用上述编排器。兼容旧工作台仍可调用 `construction_apply_and_assemble`，`generate_word` 默认true。项目名未知使用项目代码，不编造医院名称。
 
-未指定模板时直接复用 `build_report_docx.py` 内置 A4 中文样式、Heading 1—7 多级编号、正文缩进、页边距与页码。指定格式配置时校验模板及证据哈希；不再询问是否使用已经授权的内置格式，也不临时创建另一套样式。封面文种为“建设清单与建设内容”，正文只含两章；工作稿标记保留，其含义不是完整可研报批稿。不得生成后手工删门禁标记来冒充正式报批文件。
+共享编排器默认内置A4中文样式、Heading 1—7编号、缩进、页边距与页码。底层专项Word构建器继续支持已确认格式配置。封面为“建设清单与建设内容”，正文两章。`construction`模式必须绑定当前数据库、项目与manifest且输入正文完全一致；不注入完整可研工作稿标记，也不代表通过可研报批门禁，禁止生成后手工删除门禁标记。
 
 `word_structure_pass_render_required` 只说明结构通过；继续渲染检查。`word_generation_failed` 要报告具体原因、修复并重试，不能改成交付 MD。最终第一链接给 DOCX，说明保留的缺口和实际检查结果；审计 JSON/MD 放内部运行目录，不向用户罗列整套工作台。没有渲染条件时仍提供已生成 Word，并明确排版未完成视觉复核，不宣称正式交付。
 
@@ -59,6 +84,7 @@ MCP 路径：`construction_apply_and_assemble` 传入 `hierarchy_review`；`gene
 - 原清单及逻辑建设项覆盖、顺序、展开/纯标题处置与确认一致；缺项、多项、错序阻断。
 - 每个模块的实际 Word 大纲父路径与确认目录一致；不仅检查 Heading 名称或编号连续。不得用最大级别截断压平下级标题。
 - 标准正文完整子树、块顺序、文本哈希保持一致；缺口正文仅 `【待补充】`。重复来源行不自动删重。
+- 最终DOCX独立核对有序标题、正文段落、表格行/单元格与真实编号；缺块、多块或篡改阻断。分别报告文本、基础表格和图片保真范围，在首轮提示图示悬空引用。
 - 两章之外的可研论证内容为零；Word 保留真实标题样式、编号及内置中文字体设置。
 - 纯文本旧知识包明确保真限制；图片、复杂表格和富文本不能声称已保留。专项构建器遇到富文本/资产会阻断，须使用保留资产的适配路径，不能静默降级。
 - 渲染后核对字体实际可用、目录大类包含子项、编号、跨页表格及末页；不把“阻断项 0”说成“所有格式提示为 0”。

@@ -92,6 +92,7 @@ def validate_snapshots(
     permission_scopes: dict[str, list[str]] | None = None,
     allow_stale: bool = False,
     require_package: bool = True,
+    source_types: set[str] | None = None,
 ) -> dict[str, Any]:
     requested_packages = set(package_ids or [])
     requested_catalogs = set(catalog_ids or [])
@@ -119,6 +120,8 @@ def validate_snapshots(
         problems = []
         seen_sources: set[tuple[str, str]] = set()
         for row in rows:
+            if source_types is not None and row["source_type"] not in source_types:
+                continue
             source_key = (row["source_type"], row["source_id"])
             if source_key in seen_sources:
                 continue

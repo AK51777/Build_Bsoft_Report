@@ -235,6 +235,18 @@ def _has_report_chapter(markdown: str) -> bool:
 
 TOOLS: list[dict[str, Any]] = [
     {
+        "name": "construction_workflow",
+        "description": "清单到Word专项共享编排器：唯一核对页、一次确认、断点续跑和状态读取；仅返回路径与统计，不返回标准正文。",
+        "inputSchema": {"type": "object", "required": ["project_root", "action"], "properties": {
+            "project_root": {"type": "string"},
+            "action": {"type": "string", "enum": ["prepare_review", "confirm_and_generate", "resume", "get_status", "render", "record_render_review"]},
+            "input_path": {"type": "string"}, "project_code": {"type": "string"}, "project_name": {"type": "string"},
+            "database_path": {"type": "string"}, "package_id": {"type": "string"},
+            "structure_plan": {"type": "array", "items": {"type": "object"}},
+            "confirmation": {"type": "object"}, "render_review": {"type": "object"}
+        }, "additionalProperties": False},
+    },
+    {
         "name": "service_status",
         "description": "检查本机医疗信息化可研MCP服务状态和隐私边界，不读取项目正文。",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -350,10 +362,57 @@ class MedicalReportMCP:
         self._lock = threading.RLock()
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "service_status": self.service_status,
+            "construction_workflow": self.construction_workflow,
             "construction_prepare_review": self.construction_prepare_review,
             "construction_apply_and_assemble": self.construction_apply_and_assemble,
             "word_generate": self.word_generate,
         }
+
+    def construction_workflow(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from construction_workflow import prepare_review, confirm_and_generate, resume, get_status, record_render_review
+        from construction_render import render
+        root = self.paths.project_root(arguments.get("project_root"))
+        action = arguments.get("action")
+        # Persisted paths receive the same checks as direct MCP arguments.
+        state_path = root / "运行数据/construction-state.json"
+        self.paths._require_project_path(state_path.resolve(), root, "state")
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            for key in ("database", "review_path", "input_path", "confirmation_path", "manifest_path", "docx_path", "render_binding"):
+                if state.get(key):
+                    self.paths._require_project_path(Path(state[key]).resolve(), root, key)
+            if state.get("render_review"):
+                self.paths._require_project_path(Path(state["render_review"]["path"]).resolve(), root, "render review")
+            for name in ("render-binding.json", "render-review.json"):
+                file = root / "运行数据" / name
+                if file.exists():
+                    evidence = json.loads(file.read_text(encoding="utf-8"))
+                    for page in evidence.get("pages", []):
+                        self.paths._require_project_path(Path(page["path"]).resolve(), root, "render page")
+                    if evidence.get("pdf_path"):
+                        self.paths._require_project_path(Path(evidence["pdf_path"]).resolve(), root, "render PDF")
+        for relative in ("运行数据", "运行数据/reviews", "运行数据/confirmations", "运行数据/render", "02-交付", "01-请确认建设清单对照.md"):
+            self.paths._require_project_path((root / relative).resolve(), root, relative)
+        with self._lock:
+            if action == "prepare_review":
+                source = self.paths.input_file(arguments.get("input_path"), root, "input_path", (".xlsx", ".csv", ".tsv", ".docx", ".md", ".txt", ".json"))
+                database = self.paths.input_file(arguments["database_path"], root, "database_path", (".sqlite", ".db")) if arguments.get("database_path") else None
+                if not arguments.get("project_code"):
+                    raise ValueError("project_code is required")
+                return prepare_review(root, source, arguments["project_code"], database=database, project_name=arguments.get("project_name", ""), plan=arguments.get("structure_plan"), package_id=arguments.get("package_id", ""))
+            if action == "confirm_and_generate":
+                return confirm_and_generate(root, arguments.get("confirmation", {}))
+            if action == "resume":
+                return resume(root)
+            if action == "get_status":
+                return get_status(root)
+            if action == "render":
+                result = render(root)
+                result.pop("render", None)
+                return result
+            if action == "record_render_review":
+                return record_render_review(root, arguments.get("render_review", {}))
+            raise ValueError("unknown construction workflow action")
 
     def service_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if arguments:

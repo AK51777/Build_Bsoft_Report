@@ -84,9 +84,11 @@ def lint_docx(docx: Path, style_contract_path: Path | None = None) -> dict[str, 
         style_id = explicit_style_id or default_paragraph_style_id
         style = styles.get(style_id, {})
         role = semantic_role(style) if style else ("body_unstyled" if not style_id else "unknown")
+        style_label = str(style.get("style_name", "")).lower().replace(" ", "")
+        is_toc = bool(re.fullmatch(r"(?:toc|目录)[1-9]", style_label))
         table_index = table_map.get(id(paragraph))
         leading = re.match(r"^([\t \u3000]+)", text)
-        if leading:
+        if leading and not is_toc:
             chars = leading.group(1)
             types = []
             if "\t" in chars:
@@ -130,7 +132,7 @@ def lint_docx(docx: Path, style_contract_path: Path | None = None) -> dict[str, 
                 {"rule": "非空段落应绑定语义样式"},
                 True,
             )
-        if table_index is None and HEADING_LIKE.match(text.strip()) and not role.startswith("heading_"):
+        if table_index is None and not is_toc and HEADING_LIKE.match(text.strip()) and not role.startswith("heading_"):
             add_issue(
                 paragraph_index,
                 table_index,
@@ -165,7 +167,7 @@ def lint_docx(docx: Path, style_contract_path: Path | None = None) -> dict[str, 
                     {"rule": "缩进优先由样式契约控制；表格、标题、题注不得继承正文首行缩进"},
                     True,
                 )
-            if tabs is not None:
+            if tabs is not None and not is_toc and role != "list":
                 add_issue(
                     paragraph_index,
                     table_index,

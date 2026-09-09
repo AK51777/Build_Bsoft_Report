@@ -27,9 +27,10 @@ from knowledge_db import (
     stable_id,
 )
 from standard_solution_coverage import require_complete_standard_solution_coverage
+from construction_model import build_heading_tree, duplicate_mappings, traceability, render_tree
 
 
-MATCHER_VERSION = "construction-module-subtree-v3"
+MATCHER_VERSION = "construction-module-subtree-v4"
 HIERARCHY_VERSION = "construction-parent-review-v1"
 MAX_REVIEW_CANDIDATES = 5
 WEAK_SIMILARITY_THRESHOLD = 0.65
@@ -395,15 +396,17 @@ def _assembly_heading_fields(
 ) -> dict[str, Any]:
     customer_group_path, customer_parent_path = _customer_heading_paths(scope_row)
     standard_ancestor_path = _standard_ancestor_path(root, product_name)
+    cells = _json(scope_row.get("display_cells_json"), {})
+    explicit_path = cells.get("_display_parent_path")
     return {
         "customer_domain": str(scope_row.get("domain") or ""),
         "customer_hierarchy": _json(scope_row.get("hierarchy_json"), []),
         "customer_group_path": customer_group_path,
         "customer_parent_path": customer_parent_path,
         "standard_ancestor_path": standard_ancestor_path,
-        "display_parent_path": reviewed_parent_path if reviewed_parent_path is not None else _dedupe_heading_path(
+        "display_parent_path": reviewed_parent_path if reviewed_parent_path is not None else (list(explicit_path) if explicit_path is not None else _dedupe_heading_path(
             customer_group_path + customer_parent_path + standard_ancestor_path
-        ),
+        )),
     }
 
 
@@ -639,6 +642,10 @@ def _candidate_markdown(result: dict[str, Any]) -> str:
     lines.append(f"- 精确自动确认：{result['summary']['auto_confirmed_exact']}")
     lines.append(f"- 待人工确认：{result['summary']['needs_human_review']}")
     lines.append(f"- 标准内容缺失：{result['summary']['content_missing']}")
+    if result.get("duplicate_mappings"):
+        lines.extend(["", "## 重复映射请留意", ""])
+        for group in result["duplicate_mappings"]:
+            lines.append("、".join(f"第{i['source_ordinal']}项 {i['original_name']}" for i in group["items"]) + "：" + group["message"])
     lines.extend(["", "## 先核对目录归属", "", "|序号|清单模块|建议父目录|需处理事项|",
                   "|---|---|---|---|"])
     for item in result.get("hierarchy_review", {}).get("items", []):
@@ -711,8 +718,20 @@ def match_scope(
                 "package_id": package_id,
                 "package_content_hash": package_hash,
                 "matcher_version": MATCHER_VERSION,
+                "similar_threshold": similar_threshold,
+                "scope_rows": scope_rows,
+                "capabilities": capability_rows,
+                "blocks": blocks,
             }
         )
+        cached = conn.execute(
+            "SELECT summary_json FROM construction_match_run WHERE project_id=? AND input_hash=? AND status='completed' ORDER BY rowid DESC LIMIT 1",
+            (project["project_id"], input_hash),
+        ).fetchone()
+        if cached:
+            result = _json(cached["summary_json"], {}).get("cached_result")
+            if result:
+                return result
         timestamp = now_iso()
         run_id = stable_id("CONSTRUCTIONMATCH", input_hash, timestamp)
         conn.execute(
@@ -728,6 +747,7 @@ def match_scope(
         missing_count = 0
         candidate_total = 0
         pending_inserts: list[dict[str, Any]] = []
+        root_cache = {}
         for scope_row in scope_rows:
             hierarchy = _json(scope_row["hierarchy_json"], [])
             parent_terms = hierarchy[:-1] + [scope_row.get("domain", "")]
@@ -758,7 +778,9 @@ def match_scope(
                         or [0.0]
                     ),
                 )
-                root_options = _root_options(capability, blocks)
+                if capability["capability_id"] not in root_cache:
+                    root_cache[capability["capability_id"]] = _root_options(capability, blocks)
+                root_options = root_cache[capability["capability_id"]]
                 preferred_roots = [
                     option
                     for option in root_options
@@ -957,8 +979,7 @@ def match_scope(
                     "unique exact module and product subtree","system",timestamp,decision_hash,timestamp,
                 ),
             )
-        conn.commit()
-    result = {
+        result = {
         "database": str(database.resolve()),
         "project_code": project_code,
         "match_run_id": run_id,
@@ -970,8 +991,13 @@ def match_scope(
         "summary": summary,
         "items": result_items,
         "review_gate": "similar, ambiguous and missing items require a human decision before assembly",
-    }
-    result["hierarchy_review"] = _hierarchy_candidate(result)
+        "duplicate_mappings": duplicate_mappings(result_items, candidates=True),
+        "input_hash": input_hash,
+        }
+        result["hierarchy_review"] = _hierarchy_candidate(result)
+        conn.execute("UPDATE construction_match_run SET summary_json=? WHERE match_run_id=?",
+                     (dump_json({**summary, "cached_result": result}), run_id))
+        conn.commit()
     return result
 
 
@@ -1011,6 +1037,8 @@ def apply_decisions(database: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 row_id = row["scope_row_id"] if row else ""
             if not row_id:
                 raise ValueError("each decision requires scope_row_id or source_ordinal")
+            if not conn.execute("SELECT 1 FROM construction_scope_row WHERE scope_row_id=? AND scope_snapshot_id=?", (row_id, run["scope_snapshot_id"])).fetchone():
+                raise ValueError("decision row does not belong to this match run")
             decision = str(entry.get("decision") or "")
             if decision not in {"confirmed", "confirmed_gap", "rejected", "deferred"}:
                 raise ValueError(f"unsupported decision: {decision}")
@@ -1080,6 +1108,10 @@ def apply_decisions(database: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 "reviewed_by": reviewed_by,
                 "reviewed_at": reviewed_at,
             }
+            previous = conn.execute("SELECT * FROM construction_match_decision WHERE match_run_id=? AND scope_row_id=? ORDER BY rowid DESC LIMIT 1", (run_id, row_id)).fetchone()
+            if previous and (previous["decision"], previous["chosen_capability_id"] or "", _json(previous["chosen_root_heading_path_json"], []), _json(previous["chosen_block_ids_json"], []), previous["decision_note"], previous["reviewed_by"]) == (decision, capability_id, root, block_ids, decision_payload["note"], reviewed_by):
+                duplicates += 1
+                continue
             decision_hash = _canonical_hash(decision_payload)
             cursor = conn.execute(
                 """
@@ -1111,7 +1143,7 @@ def apply_decisions(database: Path, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _markdown_cell(value: Any) -> str:
-    return str(value or "").replace("|", "\\|").replace("\r\n", "<br>").replace("\n", "<br>")
+    return str(value if value is not None else "").replace("|", "\\|").replace("\r\n", "<br>").replace("\n", "<br>")
 
 
 def _scope_snapshot_markdown(payload: dict[str, Any], heading_level: int = 2, title: str = "软件建设清单") -> list[str]:
@@ -1165,11 +1197,14 @@ def _solution_item_markdown(item: dict[str, Any], heading_level: int = 3) -> lis
 
 
 def render_scope_fragment(manifest: dict[str, Any], heading_level: int = 2, title: str = "软件建设清单") -> str:
-    payload = manifest["construction_list_import"]["display_payload"]
+    scope = manifest["construction_list_import"]
+    payload = scope.get("original_display_payload", scope["display_payload"])
     return "\n".join(_scope_snapshot_markdown(payload, heading_level, title))
 
 
 def render_solution_fragment(manifest: dict[str, Any], heading_level: int = 2, title: str = "应用软件建设方案") -> str:
+    if "heading_tree" in manifest:
+        return render_tree(manifest, chapter_level=heading_level, title=title)
     lines = [f"{'#' * heading_level} {title}", ""]
     last_parent_path: list[str] = []
     for item in manifest["application_software_solution"]["items"]:
@@ -1219,6 +1254,8 @@ def assemble(
                 (run["scope_snapshot_id"],),
             ).fetchone()
         )
+        if snapshot["snapshot_status"] != "current":
+            raise ValueError("scope snapshot changed after matching; prepare a new review")
         scope_rows = [
             dict(row)
             for row in conn.execute(
@@ -1241,6 +1278,7 @@ def assemble(
         if ambiguous_rows and not reviewed_paths:
             raise ValueError("hierarchy_confirmation_required: review category and parent paths before assembly: "
                              + ", ".join(row["original_name"] for row in ambiguous_rows[:8]))
+        all_blocks = _load_blocks(conn, allowed_block_ids if allowed_block_ids else None)
         for scope_row in scope_rows:
             reviewed_parent = reviewed_paths.get(scope_row["scope_row_id"])
             base_heading_fields = _assembly_heading_fields(scope_row, [], "", reviewed_parent)
@@ -1322,7 +1360,6 @@ def assemble(
                 raise ValueError(f"chosen subtree block order/content changed for {scope_row['original_name']}")
             if not selected_blocks or any(not _is_prefix(root, block["heading_path"]) for block in selected_blocks):
                 raise ValueError(f"chosen blocks are not one complete heading subtree: {scope_row['original_name']}")
-            all_blocks = _load_blocks(conn, allowed_block_ids if allowed_block_ids else None)
             document_ids = {block["corpus_document_id"] for block in selected_blocks}
             expected = [
                 block for block in all_blocks
@@ -1386,8 +1423,9 @@ def assemble(
         # Check the entire rendered hierarchy before persisting a completed manifest.
         render_solution_fragment({"application_software_solution": {"items": items}})
         raw_payload = _json(snapshot["display_payload_json"], {})
+        provenance = traceability(raw_payload, scope_rows)
         manifest_core = {
-            "schema_version": "construction-assembly-v1",
+            "schema_version": "construction-assembly-v2",
             "project_code": project_code,
             "match_run_id": match_run_id,
             "scope_snapshot_id": snapshot["scope_snapshot_id"],
@@ -1403,7 +1441,11 @@ def assemble(
                 "source_path": snapshot["source_path"],
                 "source_sha256": snapshot["source_sha256"],
                 "display_payload": raw_payload,
+                "original_display_payload": raw_payload.get("original_display_payload", raw_payload),
             },
+            "traceability": provenance,
+            "heading_tree": build_heading_tree(items, provenance),
+            "duplicate_mappings": duplicate_mappings(items),
             "application_software_solution": {
                 "target_section_role": "overall_design.application_software_solution",
                 "order_rule": "customer_scope_source_order",
@@ -1495,6 +1537,8 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
         if run is None:
             issues.append({"code": "match_run_missing", "blocking": True})
         else:
+            if run["status"] == "superseded":
+                issues.append({"code": "match_run_superseded", "blocking": True})
             if project is not None and run["project_id"] != project["project_id"]:
                 issues.append({"code": "match_run_project_mismatch", "blocking": True})
             if run["scope_snapshot_id"] != manifest.get("scope_snapshot_id"):
@@ -1539,6 +1583,8 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
             issues.append({"code": "snapshot_missing", "blocking": True})
         else:
             payload = _json(snapshot["display_payload_json"], {})
+            if snapshot["snapshot_status"] != "current":
+                issues.append({"code": "scope_snapshot_superseded", "blocking": True})
             if _canonical_hash(payload) != manifest.get("scope_snapshot_hash"):
                 issues.append({"code": "scope_snapshot_hash_mismatch", "blocking": True})
             manifest_scope = manifest.get("construction_list_import", {})
@@ -1550,6 +1596,19 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
             ):
                 issues.append({"code": "scope_source_binding_mismatch", "blocking": True})
         items = manifest.get("application_software_solution", {}).get("items", [])
+        captured = [dict(r) for r in conn.execute("SELECT * FROM construction_scope_row WHERE scope_snapshot_id=? ORDER BY source_ordinal", (manifest.get("scope_snapshot_id"),))]
+        if [i.get("scope_row_id") for i in items] != [r["scope_row_id"] for r in captured]:
+            issues.append({"code": "scope_row_coverage_mismatch", "blocking": True})
+        if manifest.get("schema_version") == "construction-assembly-v2" and snapshot:
+            try:
+                expected_trace = traceability(payload, captured)
+                if manifest.get("traceability") != expected_trace or manifest["construction_list_import"].get("original_display_payload") != payload.get("original_display_payload", payload):
+                    issues.append({"code": "original_row_traceability_mismatch", "blocking": True})
+                if manifest.get("heading_tree") != build_heading_tree(items, expected_trace):
+                    issues.append({"code": "heading_tree_mismatch", "blocking": True})
+            except (ValueError, KeyError) as exc:
+                issues.append({"code": "construction_model_invalid", "blocking": True, "detail": str(exc)})
+        live_blocks = _load_blocks(conn, allowed_block_ids)
         if manifest.get("status") == "blocked" or manifest.get("preview_only"):
             issues.append({"code": "unresolved_working_preview", "blocking": True})
         orders = [_int(item.get("source_ordinal")) for item in items]
@@ -1579,7 +1638,7 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
                 issues.append({"code": "heading_depth_exceeded", "blocking": True, "item": item.get("original_name")})
             scope_row = conn.execute(
                 """
-                SELECT csr.source_ordinal,csr.scope_row_id,csr.hierarchy_json,
+                SELECT csr.source_ordinal,csr.scope_row_id,csr.hierarchy_json,csr.display_cells_json,
                        psi.scope_id,psi.original_name,psi.domain
                 FROM construction_scope_row AS csr
                 JOIN project_scope_item AS psi ON psi.scope_id=csr.scope_id
@@ -1601,6 +1660,10 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
                     }
                 )
             if scope_row is not None:
+                latest = conn.execute("SELECT * FROM construction_match_decision WHERE match_run_id=? AND scope_row_id=? ORDER BY rowid DESC LIMIT 1", (manifest.get("match_run_id"), item.get("scope_row_id"))).fetchone()
+                expected_decision = "confirmed_gap" if item.get("status") == "pending_supplement" else "confirmed"
+                if not latest or latest["decision"] != expected_decision or (expected_decision == "confirmed" and (latest["chosen_capability_id"] != item.get("capability_id") or _json(latest["chosen_block_ids_json"], []) != item.get("block_ids"))):
+                    issues.append({"code": "latest_decision_mismatch", "blocking": True})
                 expected_headings = _assembly_heading_fields(
                     dict(scope_row),
                     [str(value) for value in item.get("root_heading_path", [])],
@@ -1687,7 +1750,7 @@ def validate_manifest(database: Path, manifest: dict[str, Any]) -> dict[str, Any
                         block["heading_path"] = _json(block.get("heading_path_json"), [])
                         block_rows.append(block)
                 document_ids = {block["corpus_document_id"] for block in block_rows}
-                all_blocks = _load_blocks(conn, allowed_block_ids)
+                all_blocks = live_blocks
                 expected = [
                     block
                     for block in all_blocks

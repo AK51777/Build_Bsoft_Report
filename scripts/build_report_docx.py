@@ -449,6 +449,7 @@ def add_hyperlink(paragraph, text: str, url: str) -> None:
 
 
 def add_inline_markdown(paragraph, value: str) -> None:
+    value = value.replace("<br>", "\n")
     position = 0
     for match in INLINE_PATTERN.finditer(value):
         if match.start() > position:
@@ -511,7 +512,7 @@ def add_markdown_table(
 
 
 def parse_table_row(line: str) -> list[str]:
-    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
 
 
 def current_adopted_hash(conn, project_id: str) -> str:
@@ -687,9 +688,17 @@ def build_docx(
     project_code: str = "",
     format_config: Path | None = None,
     document_title: str = "可行性研究报告",
+    construction_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if mode not in {"working", "delivery"}:
-        raise ValueError("mode must be working or delivery")
+    if mode not in {"working", "delivery", "construction"}:
+        raise ValueError("mode must be working, delivery or construction")
+    if mode == "construction":
+        from construction_word import construction_markdown
+        from construction_alignment import validate_manifest
+        if database is None or not construction_manifest or construction_manifest.get("project_code") != project_code or document_title != "建设清单与建设内容":
+            raise ValueError("construction mode requires a bound database, project and assembly manifest")
+        if not validate_manifest(database, construction_manifest)["valid"] or markdown != construction_markdown(construction_manifest):
+            raise ValueError("construction Word input must equal the current validated assembly")
     if not document_title.strip() or "\n" in document_title or "\r" in document_title:
         raise ValueError("document_title must be a nonempty single-line title")
     if mode == "delivery" and document_title != "可行性研究报告":

@@ -1,5 +1,7 @@
 # 清单对照与 Word 生成 MCP 服务规则
 
+新工作台优先使用 `construction_workflow` 工具：`prepare_review/confirm_and_generate/resume/get_status/render/record_render_review` 共用专项编排器，返回唯一核对入口、Word路径及真实状态。用户确认含当前review_id和实际答复；项目状态中的数据库、原始输入、核对包和渲染路径也执行白名单检查。工具不返回标准正文。既有四个工具保留兼容，专项细节见 [清单到Word专项流程](construction-only-workflow.md)。
+
 ## 1. 模块定位
 
 `medical_report_mcp_server.py`是现有确定性脚本的本机适配层，不重新实现清单匹配、人工决定、标准方案装配或 Word 排版算法。它继承 Skill 的全局事实、防编造、知识版本、逐字复用和交付门禁，只单独管理以下事项：

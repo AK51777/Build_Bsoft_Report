@@ -12,6 +12,7 @@ from build_report_docx import build_docx, plain_inline_text, resolve_format_auth
 from construction_alignment import render_scope_fragment, render_solution_fragment, validate_manifest
 from knowledge_db import sha256_file
 from lint_docx_format import lint_docx
+from construction_word import audit_word, fidelity, PRESET_ID
 
 
 def audit_heading_paths(docx: Path, manifest: dict, semantic_styles: dict | None = None) -> dict:
@@ -69,6 +70,13 @@ def audit_heading_paths(docx: Path, manifest: dict, semantic_styles: dict | None
             expected.extend(module + relative[:index + 1] for index in range(common, len(relative)))
             relative_before, section_before = relative, section
         previous = parents
+    if "heading_tree" in manifest:
+        expected = []
+        paths = {"construction_content": []}
+        for node in manifest["heading_tree"]["nodes"]:
+            if node["kind"] == "heading":
+                paths[node["node_id"]] = paths[node["parent_id"]] + [node["title"]]
+                expected.append(paths[node["node_id"]])
     expected = [[plain_inline_text(value) for value in path] for path in expected]
     if actual != expected:
         raise ValueError("Word heading ancestry differs from the confirmed construction manifest")
@@ -89,10 +97,14 @@ def build_construction_docx(database: Path, manifest: dict, output: Path,
     output.parent.mkdir(parents=True, exist_ok=True)
     markdown = (render_scope_fragment(manifest, 1, "第1章 建设清单") + "\n\n"
                 + render_solution_fragment(manifest, 1, "第2章 建设内容"))
-    summary = build_docx(markdown, output, project_name, mode="working",
-                         format_config=format_config, document_title="建设清单与建设内容")
+    summary = build_docx(markdown, output, project_name, mode="construction",
+                         format_config=format_config, document_title="建设清单与建设内容",
+                         database=database, project_code=manifest["project_code"], construction_manifest=manifest)
     _, authority = resolve_format_authority(None, format_config)
     headings = audit_heading_paths(output, manifest, authority.get("semantic_styles"))
+    content_audit = audit_word(output, manifest, authority.get("semantic_styles"))
+    if not content_audit["valid"]:
+        raise ValueError(f"Word source content audit failed at token {content_audit['first_mismatch']}")
     style_path = authority.get("_resolved_evidence", {}).get("style_contract_path")
     lint = lint_docx(output, Path(style_path) if style_path else None)
     structure_pass = not any(summary.get("markdown_residue", {}).values()) and not int(
@@ -105,6 +117,7 @@ def build_construction_docx(database: Path, manifest: dict, output: Path,
         "docx_sha256": sha256_file(output), "assembly_manifest_id": manifest["manifest_id"],
         "assembly_manifest_hash": manifest["manifest_hash"], "validation": validation,
         "build_summary": summary, "heading_ancestry_audit": headings, "format_lint": lint,
+        "content_audit": content_audit, "fidelity": fidelity(manifest), "preset_id": PRESET_ID,
         "structural_validation_passed": structure_pass, "visual_render_review": "not_run",
         "delivery_ready": False, "plain_text_source_limitation": limitation,
         "next_action": "渲染并检查Word；通过后交付DOCX。不得仅返回中间Markdown或声称已保留源Word全部版式。",

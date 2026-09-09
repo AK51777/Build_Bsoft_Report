@@ -28,6 +28,8 @@ description: Create evidence-based Chinese government-investment medical informa
 
 复制 `assets/project-workbench-template/` 作为新项目工作台起点。项目已有目录结构时，只复制需要的模板，不强制改名或搬迁。
 
+专项流程优先运行 `scripts/construction_workflow.py` 的 `prepare-review → confirm-and-generate → 逐页视觉复核`；中断用 `resume`，状态用 `status`，参数见专项规则。只有一个主核对入口，确认后默认DOCX；原始行与展开项分别计数，重复映射提前展示。专项只验证标准知识包，不检查无关政策包。
+
 ## 按需读取规则
 
 - 执行完整流程或判断阶段门禁时，读取 `references/workflow.md`。

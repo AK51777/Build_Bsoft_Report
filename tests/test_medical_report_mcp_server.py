@@ -82,6 +82,7 @@ class MedicalReportMCPTests(unittest.TestCase):
             names,
             {
                 "service_status",
+                "construction_workflow",
                 "construction_prepare_review",
                 "construction_apply_and_assemble",
                 "word_generate",
